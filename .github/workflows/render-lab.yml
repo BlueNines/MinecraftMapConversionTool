@@ -1,0 +1,64 @@
+name: Render laboratory
+on:
+  push:
+    branches: [fix/live-preview-hot-updates]
+    paths: ['.github/workflows/render-lab.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Compile current application
+        working-directory: app/chunker
+        run: bash ./gradlew :cli:shadowJar --no-daemon
+      - name: Prepare pinned public engines and licensed-local test resources
+        shell: python
+        run: |
+          import urllib.request, json, pathlib, hashlib, subprocess
+          out = pathlib.Path('render-lab'); out.mkdir()
+          def get(url, path):
+              req = urllib.request.Request(url, headers={'User-Agent':'MinecraftMapConversionTool-regression'})
+              with urllib.request.urlopen(req, timeout=120) as response:
+                  data=response.read()
+              path.write_bytes(data)
+              return data
+          for version in ('5.16','1.5.5'):
+              get(f'https://github.com/BlueMap-Minecraft/BlueMap/releases/download/v{version}/BlueMap-{version}-cli.jar',out/f'BlueMap-{version}-cli.jar')
+              get(f'https://api.github.com/repos/BlueMap-Minecraft/BlueMap/zipball/v{version}',out/f'BlueMap-{version}-source.zip')
+          manifest=json.loads(get('https://piston-meta.mojang.com/mc/game/version_manifest_v2.json',out/'minecraft-manifest.json'))
+          for version in ('1.12.2','1.21','1.21.11'):
+              info=next(v for v in manifest['versions'] if v['id']==version)
+              metadata=json.loads(get(info['url'],out/f'minecraft-{version}.json'))
+              client=metadata['downloads']['client']
+              data=get(client['url'],out/f'minecraft-{version}-client.jar')
+              assert hashlib.sha1(data).hexdigest()==client['sha1'], version
+          subprocess.run(['git','archive','--format=zip','HEAD','-o',str(out/'project-source.zip')],check=True)
+          (out/'checksums.json').write_text(json.dumps({p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in out.iterdir() if p.is_file()},indent=2))
+          # No user world is uploaded. Client jars are temporary verification resources, not project assets or releases.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: render-lab-engines
+          path: |
+            render-lab/BlueMap-*-cli.jar
+            render-lab/BlueMap-*-source.zip
+            render-lab/project-source.zip
+            render-lab/checksums.json
+            app/chunker/build/libs/chunker-cli-*.jar
+          retention-days: 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: render-lab-local-resources
+          path: |
+            render-lab/minecraft-*.jar
+            render-lab/minecraft-*.json
+          retention-days: 1
