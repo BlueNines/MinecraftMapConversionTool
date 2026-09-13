@@ -14,12 +14,16 @@
     仓库根目录的 启动.bat 会直接跑这里的产物。如果要把成品拿给别人，
     把整个 dist/ 目录拷走即可（里面有它自己的启动脚本）。
 
+    注意：dist/ 是构建产物，不进版本库（.gitignore 里有 /dist/），
+    所以改了代码之后要重新跑一遍本脚本，dist/ 才会跟着新。
+
 .PARAMETER JavaHome
     JDK 21 的目录。不传则依次尝试：环境变量 JAVA_HOME、常见的 Temurin 安装位置。
     必须是 JDK（带 jlink），JRE 不行。
 
 .PARAMETER SkipRuntime
-    不重建 jlink 运行时。改 Java 代码时加它会快很多，因为运行时构建最慢。
+    不重建 jlink 运行时，沿用 dist/runtime 里已有的那份。改 Java 代码时加它会快很多，
+    因为 jlink 是全程最慢的一步（约半分钟），而运行时只跟 JDK 有关、跟源码无关。
 
 .EXAMPLE
     .\tools\build.ps1
@@ -115,7 +119,14 @@ foreach ($bm in $blueMaps) {
 # ------------------------------------------------------------
 Step '组装 dist'
 
-if (Test-Path $dist) { Remove-Item $dist -Recurse -Force }
+# 清掉上一轮产物，但 -SkipRuntime 时把 runtime/ 留下。
+# 必须先判断再删：原来是无条件 Remove-Item $dist，连带 runtime 一起删了，
+# 于是下面那句「存在就跳过」永远为假，-SkipRuntime 实际上是失效的。
+if (Test-Path $dist) {
+    Get-ChildItem -Force $dist | Where-Object {
+        -not ($SkipRuntime -and $_.Name -eq 'runtime')
+    } | Remove-Item -Recurse -Force
+}
 New-Item -ItemType Directory -Force -Path (Join-Path $dist 'bluemap') | Out-Null
 
 Copy-Item $jarSource (Join-Path $dist 'chunker-cli-1.20.0.jar')
@@ -144,7 +155,7 @@ $modules = @(
 
 $runtime = Join-Path $dist 'runtime'
 if ($SkipRuntime -and (Test-Path $runtime)) {
-    Ok '跳过运行时构建（-SkipRuntime，且 runtime 已存在）'
+    Ok "跳过运行时构建（-SkipRuntime），沿用现有的 $([math]::Round((Get-ChildItem $runtime -Recurse -File | Measure-Object -Property Length -Sum).Sum / 1MB, 1)) MB"
 } else {
     Info '用 jlink 裁剪运行时…（最慢的一步，约半分钟）'
     if (Test-Path $runtime) { Remove-Item $runtime -Recurse -Force }

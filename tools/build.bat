@@ -4,8 +4,9 @@ rem （ExecutionPolicy 默认是 Restricted），双击或直接调用会被拦�
 rem 这里用 -ExecutionPolicy Bypass 只对本次调用生效，不改系统设置。
 rem
 rem 参数原样转给 build.ps1，例如：
-rem   tools\build.bat -SyncTest
-rem   tools\build.bat -SkipRuntime
+rem   tools\build.bat -SkipRuntime    改 Java 代码时用，省掉最慢的 jlink
+rem
+rem 注意：构建产物在 dist\，它不进版本库。改了代码要重跑本脚本，dist\ 才会跟着新。
 setlocal
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0build.ps1" %*
 exit /b %ERRORLEVEL%
