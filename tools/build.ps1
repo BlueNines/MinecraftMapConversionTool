@@ -166,22 +166,27 @@ $bat = @'
 @echo off
 cd /d "%~dp0"
 echo 地图降级转换工具
- echo.
+echo.
 echo 正在启动，浏览器会自动打开界面...
 echo 使用完毕后关闭本窗口即可退出。
 echo.
 "%~dp0runtime\bin\java.exe" -Dfile.encoding=UTF-8 -jar "%~dp0chunker-cli-1.20.0.jar"
 if errorlevel 1 pause
 '@
+# 换行显式转成 CRLF：here-string 里的换行跟脚本自身检出的行尾一致，
+# 而这是生成给 cmd.exe 读的脚本，不该受构建机行尾设置影响。
+# （README 同理，否则记事本打开会是一整行。）
+$bat = $bat -replace "`r?`n", "`r`n"
 [IO.File]::WriteAllText((Join-Path $dist '启动.bat'), $bat, [Text.Encoding]::GetEncoding(936))
-Ok '启动.bat（GBK 编码）'
+Ok '启动.bat（GBK 编码，CRLF）'
 
 # README 用带 BOM 的 UTF-8：记事本等工具靠 BOM 判断编码，没有 BOM 会显示成乱码。
+# 换行同样统一成 CRLF，否则记事本打开会是一整行。
 $readmeSource = Join-Path $root 'docs\README-dist.md'
 if (Test-Path $readmeSource) {
-    $text = [IO.File]::ReadAllText($readmeSource)
+    $text = [IO.File]::ReadAllText($readmeSource) -replace "`r?`n", "`r`n"
     [IO.File]::WriteAllText((Join-Path $dist 'README.md'), $text, [Text.UTF8Encoding]::new($true))
-    Ok 'README.md（带 BOM）'
+    Ok 'README.md（带 BOM，CRLF）'
 } else {
     Info '没有 docs/README-dist.md，跳过'
 }

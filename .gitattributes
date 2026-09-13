@@ -1,0 +1,26 @@
+# 固定行尾，避免不同机器 clone 下来产生“同一文件内容不同”的假差异。
+#
+# 背景：git 默认可能按平台转换行尾，于是同一份 .ps1 在两台机器上 checkout
+# 出来的字节不同。对于会生成 .bat 的构建脚本来说这会造成实际影响 ——
+# here-string 里的换行会直接写进生成的启动脚本。
+
+# 默认：仓库里统一存 LF，检出时也保持 LF
+* text=auto eol=lf
+
+# Windows 脚本必须用 CRLF。cmd.exe 对脚本换行的容错不如 bash，
+# 而记事本之类的工具也把 CRLF 当预期。
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# PowerShell 脚本用 CRLF 更保险（Windows PowerShell 5.1 的习惯），
+# 且带 BOM 存储，否则 5.1 会按系统码页读中文，直接语法出错。
+*.ps1 text eol=crlf
+
+# 二进制，不要动
+*.jar binary
+*.zip binary
+*.png binary
+*.exe binary
+*.dll binary
+*.mca binary
+*.dat binary
