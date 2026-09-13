@@ -52,13 +52,17 @@ desktop.ini
 # ============================================================
 # 以下是 Chunker 上游带的东西，本工具用不到。
 #
-# cli/data               Bedrock 版的数据表，607 MB。
-# app/chunker/app        Electron + React 界面，含 580 MB 数据副本。
-#                        本工具用的是自建网页界面（cli/src/main/resources/web）。
+# cli/data       各版本方块/物品数据表。607 MB（bedrock 367 MB + java 240 MB）。
+#                本工具做 Java → 1.12.2 降级，运行时不加载它。
+#                但要注意：cli/src/test 里的 5 个 IdentifierValidationTests
+#                会读它来校验映射表，全新克隆（如 CI）下这两个目录都不存在，
+#                那些测试会**跳过**（已改为 assumeTrue），不会失败。
+# app/chunker/app 上游的 Electron + React 界面，含 580 MB 数据副本。
+#                本工具用的是自建网页界面（cli/src/main/resources/web）。
 #
-# 本工具只做 Java → 1.12.2 降级，不涉及 Bedrock，也不用 Electron。
 # 实测：移开这两块后 gradlew :cli:shadowJar 构建成功，
 # 产物与不移开时字节完全相同（31926310 字节）。
+# 注意那只证明「编译」不受影响，测试会受影响（见上）。
 # 详见 docs/UPSTREAM.md
 # ============================================================
 app/chunker/cli/data/

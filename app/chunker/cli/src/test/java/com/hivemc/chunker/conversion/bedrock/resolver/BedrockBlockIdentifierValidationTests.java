@@ -549,7 +549,13 @@ public class BedrockBlockIdentifierValidationTests {
     @SuppressWarnings({"unchecked", "rawtypes"})
     @TestFactory
     Stream<DynamicNode> perVersionTests() {
-        List<File> directories = new ArrayList<>(List.of(Objects.requireNonNull(Path.of("data", "bedrock").toFile().listFiles(File::isDirectory))));
+        File versionDataDirectory = Path.of("data", "bedrock").toFile();
+        File[] versionDataFiles = versionDataDirectory.listFiles(File::isDirectory);
+        // The per-version data isn't part of this repository, so it can be missing. When it isn't
+        // there there is nothing to validate against - skip instead of failing with a null pointer.
+        org.junit.jupiter.api.Assumptions.assumeTrue(versionDataFiles != null,
+                "No Bedrock version data at " + versionDataDirectory.getAbsolutePath() + " - skipping");
+        List<File> directories = new ArrayList<>(List.of(Objects.requireNonNull(versionDataFiles)));
         directories.sort(Comparator.comparing((File a) -> Version.fromString(a.getName())));
 
         return directories.stream().<DynamicNode>map(dataDirectory -> {

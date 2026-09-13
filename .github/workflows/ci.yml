@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Make gradlew executable
+        run: chmod +x app/chunker/gradlew
+
+      # shadowJar is the shipped artifact, so it must build.
+      # The tests run after: cli/data (607 MB of per-version data tables) is not
+      # part of this repository, so the 5 IdentifierValidationTests that read it
+      # skip themselves instead of failing.
+      - name: Build and test
+        working-directory: app/chunker
+        run: ./gradlew :cli:shadowJar :cli:test --no-daemon
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: app/chunker/cli/build/reports/tests/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: chunker-cli-jar
+          path: app/chunker/cli/build/libs/chunker-cli-*.jar
+          if-no-files-found: error
+          retention-days: 7
+
+  smoke:
+    name: Downgrade smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # Reuse the jar the build job already produced instead of building again.
+      - name: Download the built jar
+        uses: actions/download-artifact@v4
+        with:
+          name: chunker-cli-jar
+          path: app/chunker/cli/build/libs
+
+      # libs also holds a `-unshaded.jar`, and `libs/packaged/` may hold stale
+      # copies from an earlier jpackage run. Only take the freshly built shaded jar
+      # in the top level - a glob would expand to every match and `java -jar` would
+      # then fail with "Unable to access jarfile", while recursing can pick up a
+      # build that predates the current sources.
+      - name: Locate the packaged jar
+        run: |
+          JAR=$(find app/chunker/cli/build/libs -maxdepth 1 -name 'chunker-cli-*.jar' ! -name '*-unshaded.jar' | head -1)
+          test -n "$JAR"
+          echo "Using $JAR"
+          echo "JAR=$JAR" >> "$GITHUB_ENV"
+
+      # Run a real downgrade on the worlds that ship with the tests. Both go to
+      # 1.12.2 with Y shifting on: this tool's main path, so anything that breaks
+      # the downgrade should be caught here.
+      #
+      # The two worlds cover the two cases that matter:
+      #   1.15.2   blocks already at Y >= 0, so nothing needs shifting
+      #   1.20.5   blocks at Y = -64..-49, so the shift is the only reason
+      #            anything comes out at all
+      #
+      # Note `cli` comes first: without it the jar starts the web interface and
+      # blocks forever. Also note the zips hold level.dat at their root - there is
+      # no wrapping folder - so the world directory is the unzip target itself.
+      - name: Convert and check
+        run: |
+          set -e
+          for WORLD in JAVA_1_15_2 JAVA_1_20_5; do
+            echo "=== $WORLD ==="
+            rm -rf /tmp/smoke/world /tmp/smoke/out
+            mkdir -p /tmp/smoke/world
+            unzip -q "app/chunker/cli/src/test/resources/integration/worlds/$WORLD.zip" -d /tmp/smoke/world
+            test -f /tmp/smoke/world/level.dat
+            java -Xmx3G -jar "$JAR" cli \
+              --inputDirectory /tmp/smoke/world \
+              --outputFormat JAVA_1_12_2 \
+              --outputDirectory /tmp/smoke/out \
+              --shiftToFit
+            python3 tools/ci/smoke_check.py /tmp/smoke/out
+          done

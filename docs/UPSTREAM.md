@@ -92,16 +92,35 @@ NBT 规范里 Compound 的字段本就无序，读取方（原版客户端、Blu
 
 | 目录 | 体积 | 为什么不用 |
 |---|---|---|
-| `app/chunker/cli/data/` | 607 MB | Bedrock 版的数据表。本工具只做 Java → 1.12.2，从不加载它。 |
+| `app/chunker/cli/data/` | 607 MB | 各版本的方块/物品数据表（`bedrock/` 367 MB + `java/` 240 MB）。转换运行时不加载它。 |
 | `app/chunker/app/` | 580 MB | 上游的 Electron + React 界面。本工具用的是自建的网页界面。 |
 | `app/chunker/cli/src/test/resources/integration/worlds/` | 16 MB | **保留了**。上游自带的各版本测试地图，很有用。 |
 
 排除前两项是验证过的：移开之后 `gradlew :cli:shadowJar` 构建成功，且产物字节数完全相同
-（31926310 字节）。也就是说它们确实不参与构建、也不进产物。
+（31926310 字节）。**但那只能证明「编译与打包」不受影响。**
 
-如果将来要做 Bedrock 方向，把这两块从上游取回即可：
+### 测试会受影响（曾经坏过）
+
+`cli/src/test` 里有 5 个测试会读 `data/java` / `data/bedrock` 来校验映射表：
+
+```
+JavaBlockIdentifierValidationTests      data/java
+JavaItemIdentifierValidationTests       data/java
+BedrockBlockIdentifierValidationTests   data/bedrock
+BedrockItemIdentifierValidationTests    data/bedrock
+BedrockLegacyBlockIdentifierValidationTests  data/bedrock
+```
+
+它们原本写的是 `Objects.requireNonNull(...listFiles())`，目录不存在时 `listFiles()` 返回 `null`，
+于是直接 NPE——**全新克隆后跑 `:cli:test` 会挂 5 个测试**。这里注意：有数据的是 3 Bedrock + 2 Java，
+只把 `java/`（240 MB）补回仓库并不能解决，必须连 `bedrock/`（367 MB）一起入，才共 607 MB。
+
+现在这 5 处已改为 `Assumptions.assumeTrue(...)`：数据在就正常校验，数据不在就跳过并说明原因。
+这样仓库体积保住，CI 也能全绿。想本地跑完整校验，把数据放回去即可（见下）。
+
+### 想把数据取回来
 
 ```bash
 cd app/chunker
-git sparse-checkout set cli app        # 或直接 clone 一份上游
+git sparse-checkout set cli/data        # 需要上游 git 历史，见上方「基线」一节
 ```
