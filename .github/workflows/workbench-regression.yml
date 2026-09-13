@@ -1,0 +1,47 @@
+name: Workbench regression
+on:
+  push:
+    branches: [fix/source-preview-and-block-icons]
+  pull_request:
+    paths:
+      - 'app/chunker/cli/src/**'
+      - 'tools/tests/**'
+      - '.github/workflows/workbench-regression.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: workbench-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Preserve exact source for reproducible testing
+        run: git archive --format=zip HEAD -o workbench-source.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: workbench-source
+          path: workbench-source.zip
+          retention-days: 3
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Compile application and run Java tests
+        working-directory: app/chunker
+        run: bash ./gradlew :cli:test :cli:shadowJar --no-daemon
+      - name: Upload build and test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workbench-build
+          path: |
+            app/chunker/build/libs/chunker-cli-*.jar
+            app/chunker/**/build/reports/tests/
+          if-no-files-found: ignore
+          retention-days: 3
