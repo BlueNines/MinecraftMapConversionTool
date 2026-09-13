@@ -1,0 +1,66 @@
+# ============================================================
+# 仓库只放源码与文档。下面这些要么是可重建的产物，要么体积巨大
+# 且与本工具无关，一律不进仓库。
+# ============================================================
+
+# ---- 构建产物 ----
+build/
+**/build/
+.gradle/
+**/.gradle/
+
+# ---- 第三方 jar（由 tools/build.ps1 取回）----
+*.jar
+!app/chunker/gradle/wrapper/gradle-wrapper.jar
+
+# ---- 构建输出的发布目录 ----
+# 带前导斜杠 = 只认仓库根目录。
+# 不能写成 test/，那会连 app/chunker/cli/src/test/ 一起排除，
+# 那里是上游的测试代码与测试地图（16 MB），必须保留。
+/dist/
+/test/
+/release/
+
+# ---- 工具运行时生成 ----
+work/
+tools/bin/
+workbench/bin/
+**/__pycache__/
+*.pyc
+
+# ---- 交付压缩包（只认仓库根目录，不影响测试地图）----
+/*.zip
+
+# ---- 临时文件 ----
+*.patch
+tmp/
+
+# ---- IDE ----
+.idea/
+.vscode/
+*.iml
+*.iws
+*.ipr
+
+# ---- 系统 ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Vantaloom 会话状态 ----
+.vantaloom/
+
+# ============================================================
+# 以下是 Chunker 上游带的东西，本工具用不到。
+#
+# cli/data               Bedrock 版的数据表，607 MB。
+# app/chunker/app        Electron + React 界面，含 580 MB 数据副本。
+#                        本工具用的是自建网页界面（cli/src/main/resources/web）。
+#
+# 本工具只做 Java → 1.12.2 降级，不涉及 Bedrock，也不用 Electron。
+# 实测：移开这两块后 gradlew :cli:shadowJar 构建成功，
+# 产物与不移开时字节完全相同（31926310 字节）。
+# 详见 docs/UPSTREAM.md
+# ============================================================
+app/chunker/cli/data/
+app/chunker/app/

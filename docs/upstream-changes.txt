@@ -1,0 +1,38 @@
+本工具基于 Chunker 的哪个版本
+========================================
+上游仓库: https://github.com/HiveGamesOSS/Chunker.git
+基线提交: 31c91a92bd2dda746f3e41189b603fcfd1727f04
+基线说明: Merge pull request #2582 from HiveGamesOSS/develop
+基线日期: 2026-09-02 13:13:46 +0100
+
+相对上游的改动（修改的已有文件）
+========================================
+ cli/build.gradle.kts                               |   4 +-
+ cli/src/main/java/com/hivemc/chunker/cli/CLI.java  |  83 ++++++-
+ .../hivemc/chunker/conversion/WorldConverter.java  | 244 +++++++++++++++++++++
+ .../conversion/encoding/base/Converter.java        |  28 +++
+ .../java/base/resolver/JavaResolversBuilder.java   |  35 +++
+ .../encoding/java/base/writer/JavaChunkWriter.java |  13 +-
+ .../java/base/writer/JavaColumnWriter.java         |  16 +-
+ .../encoding/java/base/writer/JavaWorldWriter.java |  22 ++
+ .../conversion/handlers/pipeline/Pipeline.java     |  19 ++
+ 9 files changed, 457 insertions(+), 7 deletions(-)
+
+
+相对上游的改动（新增的文件/目录）
+========================================
+ M cli/build.gradle.kts
+ M cli/src/main/java/com/hivemc/chunker/cli/CLI.java
+ M cli/src/main/java/com/hivemc/chunker/conversion/WorldConverter.java
+ M cli/src/main/java/com/hivemc/chunker/conversion/encoding/base/Converter.java
+ M cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/JavaResolversBuilder.java
+ M cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/writer/JavaChunkWriter.java
+ M cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/writer/JavaColumnWriter.java
+ M cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/writer/JavaWorldWriter.java
+ M cli/src/main/java/com/hivemc/chunker/conversion/handlers/pipeline/Pipeline.java
+?? cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/writer/IncrementalWriter.java
+?? cli/src/main/java/com/hivemc/chunker/downgrade/
+?? cli/src/main/java/com/hivemc/chunker/web/
+?? cli/src/main/resources/downgrade/
+?? cli/src/main/resources/web/
+
