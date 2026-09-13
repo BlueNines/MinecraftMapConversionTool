@@ -567,9 +567,28 @@ function buildMappingsJson() {
   return JSON.stringify({ identifiers });
 }
 
-$('drop').addEventListener('click', () => pickFolder());
-$('pick').addEventListener('click', () => pickFolder());
+$('drop').addEventListener('click', () => openPicker());
+$('pick').addEventListener('click', () => openPicker());
 $('findWorlds').addEventListener('click', () => findWorlds());
+
+/**
+ * One row of the world list.
+ */
+function worldButton(world) {
+  return '<button class="world" data-path="' + escapeHtml(world.path) + '">'
+    + '<b>' + escapeHtml(world.name) + '</b>'
+    + '<span>' + escapeHtml(world.path) + '</span></button>';
+}
+
+/**
+ * Show a set of worlds as a clickable list.
+ * <p>
+ * Used both by the "find my worlds" button and when a drop matches more than one world of the same name, so the two
+ * paths present the same thing in the same way.
+ */
+function renderWorldList(worlds) {
+  $('worldList').innerHTML = (worlds || []).map(worldButton).join('');
+}
 
 /**
  * List the worlds already on this machine and let the user pick one.
@@ -590,10 +609,7 @@ async function findWorlds() {
       showStatus('没找到存档', '常见位置里没有找到地图。请用「选择文件夹…」手动指定，或直接把路径填进输入框。', 'warn');
       return;
     }
-    $('worldList').innerHTML = list.slice(0, 20).map((world) =>
-      '<button class="world" data-path="' + escapeHtml(world.path) + '">'
-      + '<b>' + escapeHtml(world.name) + '</b>'
-      + '<span>' + escapeHtml(world.path) + '</span></button>').join('')
+    $('worldList').innerHTML = list.slice(0, 20).map(worldButton).join('')
       + (list.length > 20 ? '<div class="hintline">还有 ' + (list.length - 20) + ' 个未列出</div>' : '');
     showStatus('找到 ' + list.length + ' 个存档', '点一下就能选中。', 'ok');
   } catch (e) {
@@ -613,10 +629,49 @@ $('worldList').addEventListener('click', (e) => {
   showStatus('已选择地图', path, 'ok');
 });
 
-// Dropping a folder cannot give the page a path: the browser only ever reveals the folder's name. So a drop is
-// treated as "I want to choose this one" and the real picker is opened, which is the only way to get a usable path.
-async function pickFolder() {
-  showStatus('选择文件夹', '已在桌面打开选择框，请定位到存档文件夹（里面能直接看到 level.dat）…');
+// A dropped folder cannot give the page a path: the browser only ever reveals the folder's name. But the name is
+// enough to look for - the tool already knows where worlds live, so it searches for a world by that name first.
+// Only when that fails is the file dialog opened, which is a much worse experience and should be the fallback.
+async function acceptDrop(name) {
+  if (!name) {
+    openPicker('拖入的内容读不到名字，请在弹出选择框里选到存档文件夹。');
+    return;
+  }
+
+  showStatus('正在查找', '已拖入「' + name + '」，正在你电脑上查找这个存档…');
+  try {
+    const response = await fetch('/api/resolve-dropped?name=' + encodeURIComponent(name), { method: 'POST' });
+    const data = await response.json();
+
+    if (data.path) {
+      $('input').value = data.path;
+      showStatus('已选择地图', data.path, 'ok');
+      return;
+    }
+
+    // Two worlds of the same name in different places: list them rather than guessing, since silently picking the
+    // wrong one would convert the wrong map.
+    if (data.candidates && data.candidates.length) {
+      renderWorldList(data.candidates);
+      showStatus('找到多个同名存档', '有 ' + data.candidates.length + ' 个都叫「' + name + '」，请点一下选中的那个。', 'warn');
+      return;
+    }
+
+    openPicker('没有在常见位置找到叫「' + name + '」的存档，请在弹出选择框里定位到它。');
+  } catch (e) {
+    openPicker('查找时出错（' + e + '），请在弹出选择框里定位到存档文件夹。');
+  }
+}
+
+/**
+ * Open the folder dialog, saying why it is being opened.
+ * <p>
+ * This is the fallback path: the browser gives a dropped folder's name but never its location, and when the name does
+ * not match a world the tool can find, the user has to point at it. Saying that explicitly matters, because a dialog
+ * appearing out of nowhere after a drop looks like the drop failed.
+ */
+async function openPicker(reason) {
+  if (reason) showStatus('选择文件夹', reason);
   try {
     const response = await fetch('/api/pick-folder', { method: 'POST' });
     const data = await response.json();
@@ -655,12 +710,7 @@ async function pickFolder() {
 document.addEventListener('drop', (e) => {
   const items = e.dataTransfer && e.dataTransfer.items;
   const name = items && items.length ? (items[0].webkitGetAsEntry() || {}).name : '';
-  if (name) {
-    showStatus('选择地图文件夹', '你拖入的是「' + name + '」。浏览器不会告诉网页文件夹的位置，所以马上弹出一个选择框，请在里面定位到它（选到存档文件夹本身，里面能直接看到 level.dat）。');
-  } else {
-    showStatus('选择地图文件夹', '拖入的内容读不到路径，请在弹出的选择框里选到存档文件夹。');
-  }
-  pickFolder();
+  acceptDrop(name);
 });
 
 // The last values written, so repeated polls can be ignored. The status line is refreshed twice a second while

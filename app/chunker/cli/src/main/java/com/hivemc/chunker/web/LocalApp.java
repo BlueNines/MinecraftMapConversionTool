@@ -150,6 +150,9 @@ public class LocalApp {
                 result.addProperty("error", "no-display");
             } else {
                 AtomicReference<File> chosen = new AtomicReference<>();
+                // Worked out before entering the swing thread: it walks the disk, and doing that on the event
+                // thread would freeze the very dialog it is about to show.
+                File startDirectory = suggestWorldDirectory();
                 SwingUtilities.invokeAndWait(() -> {
                     // Everything here stays on the swing thread, including showing the owner. Touching a window from
                     // any other thread is undefined behaviour and a common cause of a dialog that never appears.
@@ -168,7 +171,7 @@ public class LocalApp {
                         chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
                         chooser.setDialogTitle("选择地图存档文件夹（里面应该能直接看到 level.dat）");
                         chooser.setAcceptAllFileFilterUsed(true);
-                        chooser.setCurrentDirectory(suggestWorldDirectory());
+                        chooser.setCurrentDirectory(startDirectory);
                         if (chooser.showOpenDialog(owner) == JFileChooser.APPROVE_OPTION) {
                             chosen.set(chooser.getSelectedFile());
                         }
@@ -191,16 +194,25 @@ public class LocalApp {
     }
 
     /**
-     * Guess where worlds are usually kept, so the picker opens somewhere useful.
+     * Pick a folder for the file dialog to open in.
+     * <p>
+     * Opening on the Desktop is actively unhelpful: the dialog then lists dozens of unrelated folders, and after a
+     * drop it reads as the drop having gone wrong. So the worlds the tool can already find are used instead - the
+     * parent of the most recently played one is a folder that really does contain worlds, and it is also where the
+     * world the user just dragged in most likely lives.
      *
-     * @return the first likely folder that exists, or the user's home directory.
+     * @return a folder to start the dialog in.
      */
     private static File suggestWorldDirectory() {
+        for (File world : discoverWorlds()) {
+            File parent = world.getParentFile();
+            if (parent != null && parent.isDirectory()) return parent;
+        }
+
         String home = System.getProperty("user.home");
         File[] candidates = {
                 new File(home, "AppData/Roaming/.minecraft/saves"),
                 new File(home, ".minecraft/saves"),
-                new File(home, "Desktop"),
                 new File(home)
         };
         for (File candidate : candidates) {
@@ -324,11 +336,17 @@ public class LocalApp {
     }
 
     /**
-     * Try to find a folder the user dropped by looking for it by name in the usual places.
+     * Try to find a folder the user dropped by looking for it by name.
      * <p>
      * A dropped folder is a security boundary in the browser: the page learns the folder's name but never where it
-     * lives. Rather than make the user type the path out, this checks the handful of directories worlds are usually
-     * kept in and offers the match if there is exactly one candidate.
+     * lives. Rather than make the user hunt for it by hand, this looks for a world of that name anywhere the tool
+     * already knows how to search - which includes third-party launcher layouts such as
+     * {@code <launcher>/.minecraft/versions/<version>/saves/<world>}, the very layout a plain search of
+     * {@code .minecraft/saves} would miss.
+     * <p>
+     * When exactly one world matches, its path is returned and the caller can select it without opening anything.
+     * Several matches are reported as candidates rather than guessed at, because silently picking one of two
+     * same-named worlds is worse than asking.
      */
     private void handleResolveDropped(HttpExchange exchange) throws IOException {
         String query = exchange.getRequestURI().getQuery();
@@ -347,28 +365,22 @@ public class LocalApp {
             return;
         }
 
-        List<Path> roots = new ArrayList<>();
-        roots.add(Path.of(System.getProperty("user.home"), "AppData", "Roaming", ".minecraft", "saves"));
-        roots.add(Path.of(System.getProperty("user.home"), ".minecraft", "saves"));
-        roots.add(Path.of(System.getProperty("user.home"), "Documents"));
-        roots.add(Path.of(System.getProperty("user.home"), "Desktop"));
-        for (String drive : new String[]{"C:\\", "D:\\", "E:\\", "F:\\"}) {
-            roots.add(Path.of(drive));
+        List<File> matches = new ArrayList<>();
+        for (File world : discoverWorlds()) {
+            if (world.getName().equalsIgnoreCase(name)) matches.add(world);
         }
 
-        Path found = null;
-        int matches = 0;
-        for (Path root : roots) {
-            Path candidate = root.resolve(name);
-            if (Files.isDirectory(candidate) && Files.isRegularFile(candidate.resolve("level.dat"))) {
-                found = candidate;
-                matches++;
+        if (matches.size() == 1) {
+            result.addProperty("path", matches.get(0).getAbsolutePath());
+        } else if (matches.size() > 1) {
+            JsonArray candidates = new JsonArray();
+            for (File match : matches) {
+                JsonObject candidate = new JsonObject();
+                candidate.addProperty("path", match.getAbsolutePath());
+                candidate.addProperty("name", match.getName());
+                candidates.add(candidate);
             }
-        }
-        if (matches == 1 && found != null) {
-            result.addProperty("path", found.toAbsolutePath().toString());
-        } else if (matches > 1) {
-            result.addProperty("ambiguous", true);
+            result.add("candidates", candidates);
         }
         respondJson(exchange, GSON.toJson(result));
     }
