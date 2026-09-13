@@ -43,6 +43,7 @@ public class ConversionJob {
     private final Path output;
     private final Path reportDirectory;
     private final boolean shiftToFit;
+    private final boolean clearContainers;
     private final String mappingsJson;
     private final boolean approximate;
 
@@ -60,15 +61,17 @@ public class ConversionJob {
      * @param output          where the converted world should be written.
      * @param reportDirectory where the report should be written (usually the output folder).
      * @param shiftToFit      whether to move the world vertically into the target height range.
+     * @param clearContainers whether to keep container blocks but drop their contents.
      * @param mappingsJson    optional user block mappings, or null to use the built-in behaviour.
      * @param approximate     whether to substitute the nearest target-version block for blocks that do not exist
      *                        there, instead of dropping them.
      */
-    public ConversionJob(Path input, Path output, Path reportDirectory, boolean shiftToFit, String mappingsJson, boolean approximate) {
+    public ConversionJob(Path input, Path output, Path reportDirectory, boolean shiftToFit, boolean clearContainers, String mappingsJson, boolean approximate) {
         this.input = input;
         this.output = output;
         this.reportDirectory = reportDirectory;
         this.shiftToFit = shiftToFit;
+        this.clearContainers = clearContainers;
         this.mappingsJson = mappingsJson;
         this.approximate = approximate;
     }
@@ -81,6 +84,7 @@ public class ConversionJob {
             status.set("reading");
             WorldConverter converter = new WorldConverter(UUID.randomUUID());
             converter.setShiftToFit(shiftToFit);
+            converter.setClearContainers(clearContainers);
 
             // The built-in approximations are always applied, with the user's own mappings taking precedence. Without
             // them whole categories of block - every wall, every non-oak trapdoor, every stripped log - are written

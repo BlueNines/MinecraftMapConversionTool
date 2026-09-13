@@ -506,7 +506,7 @@ public class LocalApp {
                 : null;
         boolean approximate = !request.has("approximate") || request.get("approximate").getAsBoolean();
 
-        ConversionJob newJob = new ConversionJob(input, output, output, shiftToFit, mappings, approximate);
+        ConversionJob newJob = new ConversionJob(input, output, output, shiftToFit, clearContainers, mappings, approximate);
         job.set(newJob);
         Thread worker = new Thread(newJob::run, "conversion");
         worker.setDaemon(true);
@@ -757,7 +757,7 @@ public class LocalApp {
             removeTree(scratch);
             Files.createDirectories(scratch);
 
-            ConversionJob analysis = new ConversionJob(input, scratch, scratch, true, mappings, approximate);
+            ConversionJob analysis = new ConversionJob(input, scratch, scratch, true, true, mappings, approximate);
             analysis.run();
             if (analysis.isFailed()) {
                 response.addProperty("ok", false);

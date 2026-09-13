@@ -445,7 +445,7 @@ async function recover() {
   }catch(e){connection(false);status('请启动本地程序','界面需要本地 Java 服务。连接恢复后点击「重新连接」。','warn');}
 }
 async function withPicker(action) {
-  if(state.busy)return;busy('select');status('正在选择地图','请在桌面选择存档文件夹，或等待本地查找完成。','neutral',true);
+  if(state.busy)return;busy('select');status('正在选择地图','正在你电脑上常见的存档位置里查找，找到会直接选中；找不到才会打开系统选择框。','neutral',true);
   try{await action();}catch(e){status('选择地图失败',e.message,'bad');}finally{state.startedAt=0;busy('');}
 }
 async function pickFolder(reason='') {
