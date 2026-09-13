@@ -1,7 +1,8 @@
 name: Workbench regression
 on:
-  push:
-    branches: [fix/source-preview-and-block-icons]
+  # No push trigger of its own: ci.yml already builds, tests and uploads for
+  # every push to main. This one runs for pull requests that touch the
+  # converter sources, plus on demand.
   pull_request:
     paths:
       - 'app/chunker/cli/src/**'
@@ -18,17 +19,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Preserve exact source for reproducible testing
         run: git archive --format=zip HEAD -o workbench-source.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: workbench-source
           path: workbench-source.zip
           retention-days: 3
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
@@ -37,7 +38,7 @@ jobs:
         run: bash ./gradlew :cli:test :cli:shadowJar --no-daemon
       - name: Upload build and test reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: workbench-build
           path: |

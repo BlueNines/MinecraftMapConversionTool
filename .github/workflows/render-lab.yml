@@ -1,7 +1,7 @@
 name: Render laboratory
 on:
   push:
-    branches: [fix/live-preview-hot-updates]
+    branches: [main]
     paths: ['.github/workflows/render-lab.yml']
   workflow_dispatch:
 permissions:
@@ -11,10 +11,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
@@ -45,7 +45,7 @@ jobs:
           subprocess.run(['git','archive','--format=zip','HEAD','-o',str(out/'project-source.zip')],check=True)
           (out/'checksums.json').write_text(json.dumps({p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in out.iterdir() if p.is_file()},indent=2))
           # No user world is uploaded. Client jars are temporary verification resources, not project assets or releases.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: render-lab-engines
           path: |
@@ -55,7 +55,7 @@ jobs:
             render-lab/checksums.json
             app/chunker/build/libs/chunker-cli-*.jar
           retention-days: 1
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: render-lab-local-resources
           path: |
