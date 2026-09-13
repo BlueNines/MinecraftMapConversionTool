@@ -7,10 +7,12 @@
       1. 编译主程序（gradlew :cli:shadowJar）
       2. 取回两个版本的 BlueMap（本地已有则直接用）
       3. 用 jlink 裁出一份自带 Java 运行时（约 63 MB，目标机器不需要装 Java）
-      4. 组装 dist/，并把启动脚本与说明写进去
-      5. 可选：镜像到 test/（保持与 dist 逐字节一致）并校验哈希
+    4. 组装 dist/，并写进启动脚本与说明
 
     全程幂等：重复运行会直接覆盖上次的产物。
+
+    仓库根目录的 启动.bat 会直接跑这里的产物。如果要把成品拿给别人，
+    把整个 dist/ 目录拷走即可（里面有它自己的启动脚本）。
 
 .PARAMETER JavaHome
     JDK 21 的目录。不传则依次尝试：环境变量 JAVA_HOME、常见的 Temurin 安装位置。
@@ -19,17 +21,16 @@
 .PARAMETER SkipRuntime
     不重建 jlink 运行时。改 Java 代码时加它会快很多，因为运行时构建最慢。
 
-.PARAMETER SyncTest
-    构建完成后再把 dist/ 镜像到 test/ 并逐文件校验哈希一致。
+.EXAMPLE
+    .\tools\build.ps1
 
 .EXAMPLE
-    .\tools\build.ps1 -SyncTest
+    .\tools\build.ps1 -SkipRuntime
 #>
 [CmdletBinding()]
 param(
     [string] $JavaHome,
-    [switch] $SkipRuntime,
-    [switch] $SyncTest
+    [switch] $SkipRuntime
 )
 
 $ErrorActionPreference = 'Stop'
@@ -192,28 +193,8 @@ if (Test-Path $readmeSource) {
 }
 
 # ------------------------------------------------------------
-# 7. 可选：镜像到 test
-# ------------------------------------------------------------
-if ($SyncTest) {
-    Step '镜像到 test/ 并校验'
-    $test = Join-Path $root 'test'
-    if (Test-Path $test) { Remove-Item $test -Recurse -Force }
-    # robocopy 的退出码 0-7 都算成功（1 = 有文件被复制），8 以上才是出错
-    robocopy $dist $test /MIR /NJH /NJS /NDL /NP /R:2 /W:1 | Out-Null
-    if ($LASTEXITCODE -ge 8) { throw "robocopy 失败，退出码 $LASTEXITCODE" }
-
-    $a = Get-ChildItem $dist -Recurse -File | ForEach-Object { $_.FullName.Substring($dist.Length) + '=' + (Get-FileHash $_.FullName -Algorithm SHA256).Hash }
-    $b = Get-ChildItem $test -Recurse -File | ForEach-Object { $_.FullName.Substring($test.Length) + '=' + (Get-FileHash $_.FullName -Algorithm SHA256).Hash }
-    $diff = Compare-Object $a $b
-    if ($diff) {
-        $diff | ForEach-Object { Info $_.InputObject }
-        throw "test/ 与 dist/ 不一致（$($diff.Count) 处）。"
-    }
-    Ok "$($a.Count) 个文件，逐文件哈希零差异"
-}
-
-# ------------------------------------------------------------
 Step '完成'
 $files = (Get-ChildItem $dist -Recurse -File | Measure-Object -Property Length -Sum)
 Ok "dist/ : $($files.Count) 个文件, $([math]::Round($files.Sum / 1MB, 1)) MB"
-Info '把整个 dist/ 目录拷给任何人，双击 启动.bat 就能用（对方不需要装 Java）。'
+Info '仓库根的 启动.bat 已经能用了（双击即可）。'
+Info '对外分发时拷走整个 dist/ 目录，里面有它自己的启动脚本。'

@@ -18,7 +18,6 @@ build/
 # 不能写成 test/，那会连 app/chunker/cli/src/test/ 一起排除，
 # 那里是上游的测试代码与测试地图（16 MB），必须保留。
 /dist/
-/test/
 /release/
 
 # ---- 工具运行时生成 ----

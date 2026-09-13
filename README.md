@@ -19,23 +19,26 @@
 
 ## 使用
 
-1. 到 [Releases](../../releases) 下载最新版本，解压到任意目录
-2. 双击 `启动.bat`（需要 **Java 21 或更高版本**）
+1. 构建（见下），或取现成的 `dist/` 目录
+2. 双击仓库根目录的 `启动.bat`
 3. 浏览器会自动打开界面（默认 `http://localhost:8123/`）
+
+根目录的 `启动.bat` 直接跑 `dist/` 里的程序；若要拿给别人，拷走整个 `dist/`
+目录即可（里面有它自己的启动脚本，对方不需要装 Java）。
 
 详细说明见 [`docs/USAGE.md`](docs/USAGE.md)。
 
 ## 从源码构建
 
-```powershell
-# 需要 JDK 21（只编译的话 17+ 即可，但打包运行时用 21）
-$env:JAVA_HOME = "C:\path\to\jdk-21"
-.\tools\build.ps1
+```
+tools\build.bat
 ```
 
 构建脚本会依次完成：编译主程序、取回两个版本的 BlueMap、
 用 jlink 裁出一份自带 Java 运行时、组装出完整的 `dist/` 目录。
-全程不需要手工拷贝文件。
+不需要手工拷贝文件，也不需要预先装 Java（但构建机要有 **JDK 21**）。
+
+改 Java 代码反复构建时加 `-SkipRuntime` 能省掉最慢的一步。
 
 ## 仓库结构
 
@@ -54,13 +57,14 @@ ai转换地图/
 │   ├── USAGE.md               使用说明
 │   ├── UPSTREAM.md            与上游 Chunker 的关系、改了哪些地方
 │   └── DESIGN.md              设计取舍（为什么这么做）
-├── tools/build.ps1            构建脚本
+├── tools/build.bat            构建入口（双击即可）
+├── 启动.bat                    启动工具（跑 dist/ 里的程序）
 ├── workbench/scripts/         调研用的分析脚本（NBT 对比、时间戳等）
 ├── 地图降级转换工具需求概要.md   原始需求
 └── 需求修订与实施方案.md        实施方案
 ```
 
-`dist/`、`test/` 与各种 jar 是构建产物，不进仓库。
+`dist/` 与各种 jar 是构建产物，不进仓库。
 
 ## 技术要点
 
