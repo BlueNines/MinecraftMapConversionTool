@@ -505,7 +505,29 @@ public class LocalApp {
 
         ConversionJob newJob = new ConversionJob(input, output, output, shiftToFit, clearContainers, mappings, approximate);
         job.set(newJob);
-        Thread worker = new Thread(newJob::run, "conversion");
+
+        // Start the result preview as soon as the conversion finishes, without the user having to ask.
+        // The viewer is not re-rendered: PreviewManager reuses the running watcher for the same source and
+        // output, and that watcher is what notices the rewritten chunks and updates just those tiles. Asking
+        // them to press "re-render preview" afterwards was the extra step; the work was already being done.
+        // Snapshots for the worker: the locals above are reassigned earlier in this method, so they are not
+        // effectively final and cannot be captured by a lambda.
+        Path resultWorld = output;
+        Path sourceWorld = input;
+        Thread worker = new Thread(() -> {
+            newJob.run();
+            if (newJob.isFinished() && !newJob.isFailed()) {
+                try {
+                    // Mark the result as out of date first: the viewer is reused rather than restarted, so the
+                    // page needs something to notice. Then let the preview layer reuse or start the watcher.
+                    previews.converted();
+                    previews.result(sourceWorld, resultWorld, false);
+                } catch (RuntimeException ignored) {
+                    // A preview that could not be started must not affect the conversion, which has already
+                    // succeeded and been written to disk. The user can still start it by hand.
+                }
+            }
+        }, "conversion");
         worker.setDaemon(true);
         worker.start();
 
@@ -647,6 +669,9 @@ public class LocalApp {
         response.addProperty("resultPreviewGeneration", result.generation());
         response.addProperty("renderElapsedSeconds", result.elapsedSeconds());
         response.addProperty("afterPort", result.port());
+        // Counts conversions, not viewer starts: the viewer is reused when only the world's contents changed, and
+        // the page needs to know that what it is showing is stale.
+        response.addProperty("resultRevision", previews.resultRevision());
         response.addProperty("iconRevision", blockIcons.revision());
     }
 

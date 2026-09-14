@@ -532,11 +532,18 @@ async function loadConversionReport() {
 function resetViewers(sides=['before','after']) {
   sides.forEach(side=>{const slot=$(side+'Slot');slot.innerHTML='<div class="viewer-empty">'+icon(side==='before'?'map':'cube')+'<strong>等待'+(side==='before'?'源地图':'转换结果')+'预览</strong><p>分析时生成源预览，转换后生成结果预览。首次渲染需要下载贴图。</p></div>';$(side==='before'?'openBefore':'openAfter').hidden=true;});
 }
-function mountSide(side,port,generation=0) {
+// The query string is what tells the frame whether it is already showing the right thing. Including the
+// result revision means a conversion that changed the world reloads the frame even though the viewer process
+// was reused - otherwise the page would keep displaying the previous tiles until the user asked for it.
+function mountSide(side,port,generation=0,revision=0) {
   port=Number(port);if(!Number.isInteger(port)||port<1||port>65535)return;
-  const hostname=location.hostname==='127.0.0.1'?'127.0.0.1':'localhost';const url='http://'+hostname+':'+port+'/?preview='+encodeURIComponent(generation);
+  // Only the content revision decides whether what is on screen is stale. Remounting on the generation alone
+  // would reload a viewer that is already correct.
+  const hostname=location.hostname==='127.0.0.1'?'127.0.0.1':'localhost';
+  const url='http://'+hostname+':'+port+'/?preview='+encodeURIComponent(generation)+'&rev='+encodeURIComponent(revision);
   const slot=$(side+'Slot'),current=slot.querySelector('iframe');if(current?.getAttribute('src')===url)return;
-  const frame=document.createElement('iframe');frame.src=url;frame.title=side==='before'?'源地图 BlueMap 3D 预览':'1.12.2 转换结果 BlueMap 3D 预览';slot.replaceChildren(frame);
+  if(side==='after'&&current&&revision&&current.getAttribute('data-rev')===String(revision))return;
+  const frame=document.createElement('iframe');frame.src=url;frame.dataset.rev=String(revision);frame.title=side==='before'?'源地图 BlueMap 3D 预览':'1.12.2 转换结果 BlueMap 3D 预览';slot.replaceChildren(frame);
   const link=$(side==='before'?'openBefore':'openAfter');link.href=url;link.hidden=false;
 }
 async function startRender(manual=false) {
@@ -558,7 +565,14 @@ async function poll() {
     else if(data.status==='failed'){status('转换失败',data.message||'请查看本地程序日志。','bad');state.startedAt=0;busy('');stopPolling();return;}
     else if(data.status==='done') {
       await loadConversionReport();
-      if(data.afterPort)mountSide('after',data.afterPort,data.resultPreviewGeneration);
+      // A reused viewer keeps serving the tiles it already rendered, so the frame is reloaded once the world has
+      // been rewritten. Reloading before the watcher has caught up would just show the old tiles again.
+      if(data.afterPort && data.resultRevision && data.resultRevision!==state.mountedResultRevision){
+        state.mountedResultRevision=data.resultRevision;
+        resetViewers(['after']);
+      }
+      if(data.afterPort)mountSide('after',data.afterPort,data.resultPreviewGeneration,data.resultRevision);
+      if(data.resultRevision){state.mountedResultRevision=data.resultRevision;}
       if(data.renderStatus==='rendering'){
         busy('render');if(data.renderElapsedSeconds)state.startedAt=Date.now()-data.renderElapsedSeconds*1000;
         status('正在生成预览',data.renderMessage||'正在渲染地图。','neutral',true);

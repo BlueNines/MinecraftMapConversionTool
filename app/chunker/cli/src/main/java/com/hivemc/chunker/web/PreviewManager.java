@@ -29,6 +29,16 @@ public final class PreviewManager implements AutoCloseable {
     private long generation;
     private boolean closed;
 
+    /**
+     * Bumped every time a conversion rewrites the result world.
+     * <p>
+     * Starting the viewer is not the same as showing new content. When the same result is converted again the
+     * viewer is reused rather than restarted - which is the point, since the watcher then re-renders only the
+     * chunks that changed - but the page already open in the browser is still showing the previous tiles. This
+     * counter gives it something to notice, so the update is visible without the user asking for it.
+     */
+    private long resultRevision;
+
     private static final class Side {
         final boolean modern;
         final ExecutorService worker;
@@ -151,6 +161,12 @@ public final class PreviewManager implements AutoCloseable {
 
     public synchronized Snapshot before() { return snapshot(before); }
     public synchronized Snapshot after() { return snapshot(after); }
+
+    /** Record that a conversion has rewritten the result world, so its viewer is known to be out of date. */
+    public synchronized void converted() { resultRevision++; }
+
+    /** The number of conversions written to the result world so far. */
+    public synchronized long resultRevision() { return resultRevision; }
 
     private Snapshot snapshot(Side side) {
         Task t = side.task;
