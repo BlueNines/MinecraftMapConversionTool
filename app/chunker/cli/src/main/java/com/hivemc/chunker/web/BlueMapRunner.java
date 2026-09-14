@@ -224,6 +224,7 @@ public class BlueMapRunner {
                     name: "Before"
                     sorting: 0
                     """.formatted(world));
+            installViewerPatch(workFolder, webRoot);
         } else {
             // The 1.12.2-era build takes a single render.conf listing every map.
             write(workFolder.resolve("render.conf"), """
@@ -243,6 +244,112 @@ public class BlueMapRunner {
                     """.formatted(web, world));
         }
     }
+
+    /**
+     * Install the viewer patch this tool ships, and tell BlueMap to load it.
+     * <p>
+     * The modern viewer places the camera when switching to free-flight mode with
+     * {@code y = terrainHeightAt(x, z) + 3 || currentY}. That lookup raycasts the ground out of the
+     * hires tiles, which only exist near the camera, so asking about a point a thousand blocks away
+     * returns 0 - and {@code 0 + 3} is truthy, so the {@code || currentY} fallback never runs. The
+     * camera lands underground and the map goes black. See the script for the full account.
+     * <p>
+     * BlueMap has official support for loading extra scripts from the web root, which is how this is
+     * applied. Editing the files inside the BlueMap jar would break on every upgrade; this does not.
+     *
+     * @param workFolder the config folder BlueMap was pointed at.
+     * @param webRoot    the web root the webapp is served from.
+     */
+    private void installViewerPatch(Path workFolder, Path webRoot) throws IOException {
+        write(webRoot.resolve("js/viewer-patch.js"), VIEWER_PATCH);
+        // Only the keys needed here are written: BlueMap keeps its defaults for everything absent, so
+        // this remains correct as the webapp gains settings.
+        write(workFolder.resolve("webapp.conf"), """
+                webroot: "%s"
+                scripts: [
+                  "js/viewer-patch.js"
+                ]
+                """.formatted(toSlashes(webRoot.toAbsolutePath())));
+    }
+
+    /**
+     * The viewer patch written into every modern web root.
+     */
+    private static final String VIEWER_PATCH = """
+            /*
+             * Fixes the camera placement that turns the map black in free-flight mode.
+             *
+             * BlueMap places the camera with:  y = map.terrainHeightAt(x, z) + 3 || currentY
+             *
+             * terrainHeightAt() finds the ground by raycasting down against the hires tiles, which
+             * only exist within the hires view distance of the camera (100 blocks by default). The
+             * point free-flight aims at is the one you were looking at, often a thousand blocks
+             * away, so the raycast misses and terrainHeightAt() returns 0 for "no terrain found".
+             * Because 0 + 3 = 3 is truthy, the "|| currentY" fallback never runs and the camera is
+             * put at y = 3 - underground, in first person, with nothing but the block it sits inside
+             * filling the screen. That is the black map.
+             *
+             * Passing the target height explicitly makes BlueMap skip its own calculation. When the
+             * ground cannot be measured, this stands above the highest ground seen so far or above
+             * sea level, rather than at y = 3.
+             *
+             * Written by the conversion tool. It is safe to delete, together with its entry in the
+             * "scripts" list of webapp.conf.
+             */
+            (function () {
+              "use strict";
+
+              var state = { patched: false, highestGround: null };
+              window.__vantaloomViewer = state;
+
+              function targetHeight(app) {
+                var viewer = app.mapViewer;
+                var controls = viewer && viewer._controlsManager;
+                if (!controls || !viewer.map) return null;
+
+                var ground = null;
+                try {
+                  ground = viewer.map.terrainHeightAt(controls.position.x, controls.position.z);
+                } catch (ignored) {
+                  ground = null;
+                }
+                if (typeof ground === "number" && ground > 0) {
+                  if (state.highestGround === null || ground > state.highestGround) {
+                    state.highestGround = ground;
+                  }
+                  return ground + 3;
+                }
+
+                // Nothing loaded under that point to measure. Stand above the highest ground seen
+                // so far, or above sea level when none has been seen yet.
+                var base = state.highestGround === null ? 63 : state.highestGround;
+                return Math.max(80, base + 12);
+              }
+
+              function patch() {
+                var app = window.bluemap;
+                if (!app || !app.mapViewer || typeof app.setFreeFlight !== "function") return false;
+                if (state.patched) return true;
+
+                var original = app.setFreeFlight;
+                app.setFreeFlight = function (duration, height) {
+                  if (height === undefined) {
+                    var computed = targetHeight(app);
+                    if (computed !== null) height = computed;
+                  }
+                  return original.call(this, duration, height);
+                };
+                state.patched = true;
+                return true;
+              }
+
+              // The viewer is created as the page boots, so wait for it to exist.
+              var attempts = 0;
+              var timer = setInterval(function () {
+                if (patch() || ++attempts > 400) clearInterval(timer);
+              }, 50);
+            })();
+            """;
 
     /**
      * The Minecraft version to tell BlueMap to use for a given side.
