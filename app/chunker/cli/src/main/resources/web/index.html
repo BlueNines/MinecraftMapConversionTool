@@ -14,6 +14,22 @@ html[data-theme=light]{color-scheme:light;--bg:#f2f5f5;--panel:#fff;--surface:#f
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 
 .btn.primary:hover:not(:disabled){background:var(--accent);filter:brightness(1.06)}
+
+/* Keep lazy images in layout: display:none/hidden prevents Chromium from ever scheduling their load. */
+.block-icon{position:relative;overflow:hidden}
+.block-icon img{position:absolute;inset:0;width:100%;height:100%;max-width:none;max-height:none;object-fit:contain;opacity:0}
+.block-icon.is-loaded img{opacity:1}.block-icon.is-loaded>svg{visibility:hidden}
+.result-block{display:flex;align-items:center;gap:8px;min-width:0}.result-block .mono{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.source-preview-strip{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:16px;padding:10px 14px;background:var(--panel);border:1px solid var(--line);border-radius:9px;font-size:12px;color:var(--dim)}
+.source-preview-strip>span:nth-child(2){flex:1}.source-preview-strip .tag{white-space:normal}
+.block-picker{position:fixed;margin:0;padding:0;inset:auto;width:360px;max-width:calc(100vw - 24px);color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:0 16px 44px #0005;z-index:100}
+.block-picker::backdrop{background:transparent}.picker-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;border-bottom:1px solid var(--line);font-size:11px;color:var(--dim)}
+.picker-options{max-height:260px;overflow:auto;padding:5px;overscroll-behavior:contain}
+.picker-option{display:flex;gap:10px;align-items:center;padding:8px 9px;cursor:pointer;border-radius:7px;font-size:12px}
+.picker-option:hover,.picker-option[aria-selected=true]{background:var(--accent-bg);color:var(--accent)}
+.picker-option .block-icon{width:34px;height:34px}.picker-option b{display:block;font-size:12px;font-weight:550}.picker-option small{display:block;font-size:10px;color:var(--muted)}
+.picker-empty{padding:18px 12px;color:var(--dim);font-size:12px}.picker-footer{padding:8px 12px;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:10px;color:var(--muted)}
+.picker-toggle{padding:6px 4px;min-height:30px;color:var(--dim);border:0;background:none;cursor:pointer}.picker-toggle .icon{width:13px;transform:rotate(90deg)}
 </style>
 </head>
 <body>
@@ -79,6 +95,8 @@ html[data-theme=light]{color-scheme:light;--bg:#f2f5f5;--panel:#fff;--surface:#f
 </nav>
 <section class="page" id="page-analysis" role="tabpanel" aria-labelledby="tab-analysis">
 <div id="analysisNotice" class="notice warn" hidden><svg class="icon"><use href="#i-alert"/></svg><span></span></div>
+<div id="sourcePreviewStrip" class="source-preview-strip" hidden><span class="tag" id="sourcePreviewTag">源地图</span><span id="sourcePreviewText"></span><button class="btn small quiet" id="showSourcePreview">查看源地图</button><button class="btn small quiet" id="retrySourcePreview" hidden>重试源预览</button></div>
+<div id="iconNotice" class="notice warn" hidden><svg class="icon"><use href="#i-info"/></svg><span></span></div>
 <div id="welcomeSection">
 <div class="welcome"><div class="welcome-text"><div class="eyebrow">A NEW HOME FOR YOUR WORLD</div><h2>让建筑，<br><em>跨越版本。</em></h2><p>将高版本 Java 存档转换为 1.12.2。看清哪些方块会改变，为它们选择新的模样，再对照检查每一处细节。</p><button id="welcomeBtn" class="btn primary" data-lock><svg class="icon"><use href="#i-folder"/></svg><span>选择地图，开始分析</span><svg class="icon"><use href="#i-arrow"/></svg></button><div class="welcome-meta"><span><svg class="icon"><use href="#i-shield"/></svg>本地运行</span><span><svg class="icon"><use href="#i-cube"/></svg>自定义方块映射</span></div></div>
 <div class="terrain-art" aria-hidden="true"><svg viewBox="0 0 300 230"><defs><linearGradient id="landTop" x2="0" y2="1"><stop stop-color="#80bba0"/><stop offset="1" stop-color="#426b59"/></linearGradient></defs><path d="m20 148 124-67 141 73-125 69Z" fill="none" stroke="var(--line)" stroke-dasharray="3 6"/><path d="m49 142 98-52 106 55-98 53Z" fill="var(--accent-bg)" opacity=".45"/><path d="m58 127 80-43 109 57-80 42Z" fill="#739888"/><path d="m58 127 109 56v18L58 145Z" fill="#344c43"/><path d="m167 183 80-42v18l-80 42Z" fill="#233b33"/>
@@ -102,20 +120,20 @@ html[data-theme=light]{color-scheme:light;--bg:#f2f5f5;--panel:#fff;--surface:#f
 </div>
 </section>
 <section class="page compare-page" id="page-compare" role="tabpanel" aria-labelledby="tab-compare" hidden>
-<div class="notice" id="previewNotice"><svg class="icon"><use href="#i-info"/></svg><span>完成转换后，自动生成两侧的 3D 预览。</span></div>
+<div class="notice" id="previewNotice"><svg class="icon"><use href="#i-info"/></svg><span>分析时开始生成源地图预览；转换后再生成结果预览。</span></div>
 <div class="compare-toolbar"><div class="segmented" aria-label="预览布局"><button data-layout="split" aria-pressed="true">左右对比</button><button data-layout="before" aria-pressed="false">仅源地图</button><button data-layout="after" aria-pressed="false">仅转换结果</button></div><button id="refreshPreview" class="btn small quiet" disabled><svg class="icon"><use href="#i-refresh"/></svg>重新渲染预览</button></div>
-<div class="viewers" id="viewers" data-layout="split"><article class="pane before-pane"><div class="pane-head"><div class="pane-head-left"><i class="dot muted"></i>源地图 <span class="tag">BEFORE</span></div><a class="btn small quiet icon-btn" id="openBefore" target="_blank" rel="noopener" hidden aria-label="新窗口打开源地图预览"><svg class="icon"><use href="#i-link"/></svg></a></div><div class="viewer-slot" id="beforeSlot"><div class="viewer-empty"><svg class="icon"><use href="#i-map"/></svg><strong>原来的世界</strong><p>转换后显示源地图的 3D 视图。<br>此处不会显示示意地图冒充结果。</p></div></div></article><article class="pane after-pane"><div class="pane-head"><div class="pane-head-left"><i class="dot" style="color:var(--accent)"></i>转换结果 <span class="tag good">1.12.2</span></div><a class="btn small quiet icon-btn" id="openAfter" target="_blank" rel="noopener" hidden aria-label="新窗口打开转换结果预览"><svg class="icon"><use href="#i-link"/></svg></a></div><div class="viewer-slot" id="afterSlot"><div class="viewer-empty"><svg class="icon"><use href="#i-cube"/></svg><strong>新的落脚点</strong><p>检查替换后的形状与布局。<br>预览就绪后可在这里拖动查看。</p></div></div></article></div>
+<div class="viewers" id="viewers" data-layout="split"><article class="pane before-pane"><div class="pane-head"><div class="pane-head-left"><i class="dot muted"></i>源地图 <span class="tag" id="sourcePreviewBadge">尚未分析</span></div><a class="btn small quiet icon-btn" id="openBefore" target="_blank" rel="noopener" hidden aria-label="新窗口打开源地图预览"><svg class="icon"><use href="#i-link"/></svg></a></div><div class="viewer-slot" id="beforeSlot"><div class="viewer-empty"><svg class="icon"><use href="#i-map"/></svg><strong>原来的世界</strong><p>分析时即开始显示源地图的 3D 视图。<br>此处不会显示示意地图冒充结果。</p></div></div></article><article class="pane after-pane"><div class="pane-head"><div class="pane-head-left"><i class="dot" style="color:var(--accent)"></i>转换结果 <span class="tag good">1.12.2</span></div><a class="btn small quiet icon-btn" id="openAfter" target="_blank" rel="noopener" hidden aria-label="新窗口打开转换结果预览"><svg class="icon"><use href="#i-link"/></svg></a></div><div class="viewer-slot" id="afterSlot"><div class="viewer-empty"><svg class="icon"><use href="#i-cube"/></svg><strong>新的落脚点</strong><p>检查替换后的形状与布局。<br>预览就绪后可在这里拖动查看。</p></div></div></article></div>
 <div class="compare-foot"><span>两侧独立操作，暂不支持视角同步。</span><span>首次渲染需要下载对应版本的贴图。</span></div>
 </section>
 <section class="page" id="page-report" role="tabpanel" aria-labelledby="tab-report" hidden><div id="reportEmpty" class="no-report"><svg class="icon"><use href="#i-report"/></svg><h2>每一处变化，都有记录。</h2><p>分析或转换完成后，在这里查看版本、替换数量和损失明细。</p><button class="btn quiet" id="backToAnalysis">返回分析与映射</button></div><div id="reportContent" hidden><div class="section-header"><div><h2 id="reportTitle">转换报告</h2><p id="reportSubtitle"></p></div><button class="btn small" id="downloadReport"><svg class="icon"><use href="#i-download"/></svg>下载 JSON</button></div><div id="reportStats" class="stats"></div><div class="notice warn"><svg class="icon"><use href="#i-alert"/></svg><span>预览可见不等于游戏内验收通过。请在备份副本上用原版 1.12.2 加载检查。</span></div><div class="report-grid"><article class="report-card"><h3>处理明细</h3><dl id="reportDetails"></dl></article><article class="report-card"><h3>输出与后续检查</h3><p class="tiny muted" id="outputCaption">转换结果保存在本机目录。</p><div class="output-path mono" id="resultPath"></div><button class="btn small quiet" id="copyPath"><svg class="icon"><use href="#i-copy"/></svg>复制输出路径</button><p class="tiny muted">对照检查关键建筑、楼梯朝向、展示框与高度裁剪。工具不会替你确认游戏内兼容性。</p></article></div><details><summary>查看原始报告 JSON</summary><pre id="rawReport"></pre></details></div></section>
 <footer class="bottom-bar"><div id="statusIcon" class="status-icon"><svg class="icon"><use href="#i-info"/></svg></div><div class="status-copy" role="status" aria-live="polite" aria-atomic="true"><div id="statusTitle" class="status-title">准备就绪</div><div id="statusMessage" class="status-message">选择一张地图，开始新的转换。</div></div><button id="reconnect" class="btn small quiet" hidden>重新连接</button><div id="progressArea" class="progress-area" hidden><div class="progress-meta"><span id="progressLabel">处理中</span><span id="elapsed">0 秒</span></div><div class="progress-track" id="progressTrack" role="progressbar" aria-label="任务进度"><div class="progress-fill" id="progressFill"></div></div></div></footer>
 </main>
 </div>
-<datalist id="blockList"></datalist><input type="file" id="mappingFile" accept=".json,application/json" hidden>
+<div id="blockPicker" class="block-picker" hidden><div class="picker-heading"><span>选择 1.12.2 替换方块</span><button id="pickerClear" type="button" class="btn small quiet">默认行为</button></div><div id="blockPickerList" class="picker-options" role="listbox" aria-label="方块候选"></div><div class="picker-footer"><span id="pickerCount"></span><button id="pickerMore" type="button" class="btn small quiet">加载更多</button></div></div><input type="file" id="mappingFile" accept=".json,application/json" hidden>
 <div class="toast" id="toast" role="status" hidden></div>
-<dialog id="mappingDialog" aria-labelledby="mappingDialogTitle"><form id="mappingForm"><h2 id="mappingDialogTitle">添加替换规则</h2><p>可省略 minecraft: 前缀。自定义规则仅在重新转换时应用。</p><label class="field"><span>源方块</span><input id="mapFrom" required placeholder="例如 cherry_planks" spellcheck="false"></label><label class="field"><span>替换为</span><input id="mapTo" required placeholder="例如 oak_planks" list="blockList" spellcheck="false"></label><p id="mappingError" style="color:var(--danger)" role="alert"></p><div class="dialog-actions"><button class="btn quiet" type="button" id="cancelMapping">取消</button><button class="btn primary" type="submit">保存规则</button></div></form></dialog>
+<dialog id="mappingDialog" aria-labelledby="mappingDialogTitle"><form id="mappingForm"><h2 id="mappingDialogTitle">添加替换规则</h2><p>可省略 minecraft: 前缀。自定义规则仅在重新转换时应用。</p><label class="field"><span>源方块</span><input id="mapFrom" required placeholder="例如 cherry_planks" spellcheck="false"></label><label class="field"><span>替换为</span><input id="mapTo" required placeholder="例如 oak_planks" data-target-picker role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="blockPickerList" autocomplete="off" spellcheck="false"></label><p id="mappingError" style="color:var(--danger)" role="alert"></p><div class="dialog-actions"><button class="btn quiet" type="button" id="cancelMapping">取消</button><button class="btn primary" type="submit">保存规则</button></div></form></dialog>
 <dialog id="confirmDialog" aria-labelledby="confirmTitle"><h2 id="confirmTitle">确认开始转换</h2><p class="dialog-message" id="confirmMessage"></p><div class="notice warn"><svg class="icon"><use href="#i-alert"/></svg><span>已有输出可能被重新写入。请确认备份，且输出目录与源地图分开。</span></div><div class="dialog-actions"><button class="btn quiet" id="cancelConvert">返回检查</button><button class="btn primary" id="confirmConvert">确认并开始</button></div></dialog>
-<dialog id="helpDialog" aria-labelledby="helpTitle"><h2 id="helpTitle">一个清晰的转换流程</h2><div class="help-grid"><p><b>01 选择并分析</b><br>选择包含 level.dat 的地图文件夹。分析通过本地临时试转生成报告，结束后清理临时结果，不是零磁盘写入。</p><p><b>02 调整映射</b><br>输入即保存本地草稿，筛选、翻页不会丢失输入。此浏览器保留最近 8 张地图的草稿。导入与导出兼容 identifiers JSON；修改不会自动开始转换。</p><p><b>03 转换并检查</b><br>转换后自动启动 BlueMap。可切换单侧或双侧，暂不支持同步镜头。保留原存档备份，再用 1.12.2 客户端检查。</p><p><b>现有后端限制</b><br>预分析固定按自动上移计算；取消上移时以正式转换报告为准。容器内容固定清空。当前服务没有取消任务接口。</p></div><div class="dialog-actions"><button id="closeHelp" class="btn primary">知道了</button></div></dialog>
+<dialog id="helpDialog" aria-labelledby="helpTitle"><h2 id="helpTitle">一个清晰的转换流程</h2><div class="help-grid"><p><b>01 选择并分析</b><br>选择包含 level.dat 的地图文件夹。分析通过本地临时试转生成报告，同时独立渲染源地图 BlueMap。临时转换结果会清理，源预览缓存会保留；不是零磁盘写入。</p><p><b>02 调整映射</b><br>输入即保存本地草稿，筛选、翻页不会丢失输入。此浏览器保留最近 8 张地图的草稿。导入与导出兼容 identifiers JSON；修改不会自动开始转换。</p><p><b>03 转换并检查</b><br>转换后自动启动 BlueMap。可切换单侧或双侧，暂不支持同步镜头。保留原存档备份，再用 1.12.2 客户端检查。</p><p><b>现有后端限制</b><br>预分析固定按自动上移计算；取消上移时以正式转换报告为准。容器内容固定清空。当前服务没有取消任务接口。</p></div><div class="dialog-actions"><button id="closeHelp" class="btn primary">知道了</button></div></dialog>
 <script>(() => {
 'use strict';
 const $ = id => document.getElementById(id);
@@ -127,7 +145,7 @@ const canonical = value => { const v = String(value || '').trim().toLowerCase();
 const valid = value => /^[a-z0-9_.-]+:[a-z0-9_./-]+$/.test(value);
 const nameOf = value => { const m = /type=([A-Z0-9_]+)/.exec(String(value || '')); return canonical(m ? m[1] : value); };
 const STORAGE = 'mcmap.workspaces.v1', SESSION = 'mcmap.run.v1';
-const state = { source:'', output:'', shift:true, approximate:true, drafts:new Map(), rules:[], targets:[], report:null, reportKind:'analysis', resultReport:null, scanKey:'', resultKey:'', resultPath:'', busy:'', tab:'analysis', filter:'all', page:1, pageSize:20, online:false, lastStatus:null, run:null, reportLoaded:false, renderRequested:false, pollTimer:null, polling:false, failures:0, startedAt:0, projects:{}, storageOk:true, renderClock:0 };
+const state = { source:'', output:'', shift:true, approximate:true, drafts:new Map(), rules:[], targets:[], report:null, reportKind:'analysis', resultReport:null, scanKey:'', resultKey:'', resultPath:'', busy:'', tab:'analysis', filter:'all', page:1, pageSize:20, online:false, lastStatus:null, run:null, reportLoaded:false, renderRequested:false, pollTimer:null, polling:false, failures:0, startedAt:0, projects:{}, storageOk:true, renderClock:0, iconRevision:0, sourcePreview:null, sourceServerWorld:'', sourceToken:0, sourceTimer:null };
 let toastTimer, pendingConversion;
 
 // Requests share error handling; long-running scans and the native picker intentionally have no client deadline.
@@ -167,6 +185,7 @@ function connection(ok) {
 }
 function busy(kind) {
   state.busy=kind;
+  if(kind)closePicker();
   document.querySelectorAll('[data-lock]').forEach(el=>el.disabled=Boolean(kind));
   document.querySelectorAll('.map-input,.row-reset').forEach(el=>el.disabled=Boolean(kind));
   if (kind && !state.startedAt) state.startedAt=Date.now();
@@ -215,7 +234,7 @@ function selectSource(source) {
   if(state.busy)return;
   source=String(source||'').trim();
   if(source!==state.source) {
-    save();loadProject(source);state.report=null;state.resultReport=null;state.scanKey='';state.resultKey='';state.resultPath='';state.run=null;state.lastStatus=null;state.page=1;
+    stopSourceWatch();state.sourcePreview=null;state.sourceServerWorld='';save();loadProject(source);state.report=null;state.resultReport=null;state.scanKey='';state.resultKey='';state.resultPath='';state.run=null;state.lastStatus=null;state.page=1;
     try{sessionStorage.removeItem(SESSION);}catch(e){} resetViewers();
   }
   $('worldList').hidden=true;save();renderAll();
@@ -243,6 +262,7 @@ function renderHeader() {
   $('workspaceMeta').textContent=state.busy?'本地任务进行中':'JAVA → JAVA';
   $('refreshPreview').disabled=Boolean(state.busy)||!state.resultReport;
   renderNotices();
+  renderSourcePreview();
 }
 function renderNotices() {
   const notices=[];
@@ -251,7 +271,7 @@ function renderNotices() {
   if(invalidRule()) notices.push('存在格式不完整的自定义规则，分析与转换前需要修正。');
   const box=$('analysisNotice');box.hidden=!notices.length;box.querySelector('span').textContent=notices.join(' ');
   const dirty=state.resultKey && signature()!==state.resultKey;
-  let text='完成转换后，自动生成两侧的 3D 预览。';
+  let text='分析时开始生成源地图预览；转换后再生成结果预览。';
   if(state.resultReport)text='当前预览对应最近一次转换。两侧镜头独立操作。';
   if(state.busy==='render')text='正在生成预览，哪一侧先完成就先显示。地图较大时可能需要较长时间。';
   if(dirty)text='有未应用的修改：这里仍是上次转换结果，点击「应用并重新转换」后才会更新。';
@@ -259,10 +279,138 @@ function renderNotices() {
   if(state.lastStatus?.renderStatus==='failed')text='预览渲染失败，但转换结果仍可用。检查本地日志后，可单独重新渲染。';
   $('previewNotice').querySelector('span').textContent=text;$('previewNotice').classList.toggle('warn',Boolean(dirty||state.run?.unknown||state.lastStatus?.renderStatus==='failed'));
 }
-function blockIcon(name) { return '<span class="block-icon">'+icon('cube')+'<img loading="lazy" src="/api/block-icon?name='+encodeURIComponent(name)+'" alt="" hidden></span>'; }
-// Broken/missing local block textures retain a neutral icon instead of a broken-image glyph.
-document.addEventListener('load',e=>{if(e.target.matches?.('.block-icon img')){e.target.hidden=false;e.target.previousElementSibling.setAttribute('hidden','');}},true);
-document.addEventListener('error',e=>{if(e.target.matches?.('.block-icon img')){e.target.hidden=true;e.target.previousElementSibling.removeAttribute('hidden');}},true);
+function blockIcon(name) {
+  return '<span class="block-icon" title="'+esc(name)+'">'+icon('cube')+'<img width="32" height="32" loading="lazy" decoding="async" data-block="'+esc(name)+'" src="/api/block-icon?name='+encodeURIComponent(name)+'&v='+state.iconRevision+'" alt=""></span>';
+}
+// Opacity keeps the image laid out while it loads. Failed icons remain visibly labelled, not silently successful.
+document.addEventListener('load',e=>{if(e.target.matches?.('.block-icon img')&&e.target.naturalWidth){e.target.parentElement.classList.add('is-loaded');e.target.parentElement.title=e.target.dataset.block;}},true);
+document.addEventListener('error',e=>{if(e.target.matches?.('.block-icon img')){e.target.parentElement.classList.remove('is-loaded');e.target.parentElement.title=e.target.dataset.block+' · 贴图暂不可用';}},true);
+function setIconRevision(revision) {
+  if(revision===undefined||String(revision)===String(state.iconRevision))return;
+  state.iconRevision=revision;
+  document.querySelectorAll('.block-icon img').forEach(img=>{
+    img.parentElement.classList.remove('is-loaded');
+    img.src='/api/block-icon?name='+encodeURIComponent(img.dataset.block)+'&v='+encodeURIComponent(revision);
+  });
+}
+async function refreshIconStatus() {
+  try {
+    const data=await api('/api/icon-status');setIconRevision(data.revision);
+    $('iconNotice').hidden=Boolean(data.available);
+    $('iconNotice').querySelector('span').textContent=data.message||'尚未找到客户端贴图。源地图 BlueMap 下载资源后会自动刷新。';
+  } catch(e) { /* older servers still display the fallback; preview errors are reported separately */ }
+}
+
+// A shared illustrated combobox replaces native datalist (native options cannot show item/block textures).
+let pickerInput=null,pickerEntries=[],pickerActive=-1,pickerLimit=40,pickerSelecting=false;
+function positionPicker() {
+  if(!pickerInput)return;
+  const rect=pickerInput.getBoundingClientRect(),popup=$('blockPicker');
+  if(rect.bottom<0||rect.top>innerHeight)return; // focus may precede the browser's scroll-into-view
+  const width=Math.min(Math.max(rect.width,330),innerWidth-24);
+  popup.style.width=width+'px';popup.style.left=Math.max(12,Math.min(rect.left,innerWidth-width-12))+'px';
+  const below=innerHeight-rect.bottom-12,above=rect.top-12;
+  const down=below>=180||below>=above,space=Math.max(100,down?below:above);
+  $('blockPickerList').style.maxHeight=Math.min(260,Math.max(60,space-94))+'px';
+  popup.style.top=(down?rect.bottom+5:Math.max(8,rect.top-popup.offsetHeight-5))+'px';
+}
+function closePicker() {
+  if(pickerInput){pickerInput.setAttribute('aria-expanded','false');pickerInput.removeAttribute('aria-activedescendant');}
+  const popup=$('blockPicker');if(popup?.matches(':popover-open'))popup.hidePopover();if(popup)popup.hidden=true;
+  pickerInput=null;pickerActive=-1;
+}
+function renderPicker() {
+  if(!pickerInput)return;
+  const query=short(pickerInput.value.trim().toLowerCase());
+  pickerEntries=state.targets.filter(name=>name.toLowerCase().includes(query));
+  const shown=pickerEntries.slice(0,pickerLimit);pickerActive=Math.min(pickerActive,shown.length-1);
+  $('blockPickerList').innerHTML=shown.map((name,i)=>'<div class="picker-option" id="block-option-'+i+'" role="option" aria-selected="'+(i===pickerActive)+'" data-pick-index="'+i+'">'+blockIcon(name)+'<div><b>'+esc(short(name))+'</b><small>'+esc(name)+'</small></div></div>').join('')||'<div class="picker-empty">'+(state.targets.length?'没有匹配的候选。可继续手动填写合法方块 ID。':'方块候选尚未加载，请检查本地服务连接。')+'</div>';
+  $('pickerCount').textContent='显示 '+shown.length+' / '+pickerEntries.length+' · ↑↓ 选择，Enter 确认';
+  $('pickerMore').hidden=shown.length>=pickerEntries.length;
+  $('pickerClear').hidden=pickerInput.id==='mapTo';
+  positionPicker();
+}
+function openPickerFor(input) {
+  if(state.busy||input.disabled)return;
+  if(pickerInput!==input){closePicker();pickerInput=input;pickerLimit=40;pickerActive=-1;}
+  const popup=$('blockPicker');
+  popup.hidden=false;
+  if(typeof popup.showPopover==='function'){
+    popup.setAttribute('popover','manual');if(!popup.matches(':popover-open'))popup.showPopover();
+  }else{(input.closest('dialog')||document.body).append(popup);}
+  input.setAttribute('aria-expanded','true');renderPicker();
+}
+function chooseTarget(value) {
+  if(!pickerInput)return;const input=pickerInput;
+  pickerSelecting=true;input.value=value;input.dispatchEvent(new Event('input',{bubbles:true}));pickerSelecting=false;
+  closePicker();input.focus();
+}
+document.addEventListener('focusin',e=>{if(e.target.matches?.('[data-target-picker]'))openPickerFor(e.target);});
+document.addEventListener('input',e=>{if(e.target.matches?.('[data-target-picker]')&&!pickerSelecting){pickerLimit=40;pickerActive=-1;openPickerFor(e.target);}});
+document.addEventListener('click',e=>{if(e.target.matches?.('[data-target-picker]'))openPickerFor(e.target);const toggle=e.target.closest?.('[data-picker-toggle]');if(toggle){const input=toggle.parentElement.querySelector('[data-target-picker]');if(pickerInput===input)closePicker();else{input.focus();openPickerFor(input);}}});
+document.addEventListener('pointerdown',e=>{if(pickerInput&&!e.target.closest?.('#blockPicker')&&e.target!==pickerInput&&!e.target.closest?.('[data-picker-toggle]'))closePicker();});
+$('blockPicker').addEventListener('pointerdown',e=>e.preventDefault());
+$('blockPicker').addEventListener('click',e=>{const row=e.target.closest('[data-pick-index]');if(row)chooseTarget(pickerEntries[Number(row.dataset.pickIndex)]);});
+$('pickerClear').onclick=()=>chooseTarget('');$('pickerMore').onclick=()=>{pickerLimit+=40;renderPicker();};
+document.addEventListener('keydown',e=>{
+  if(!e.target.matches?.('[data-target-picker]'))return;
+  if(e.key==='Escape'||e.key==='Tab'){if(e.key==='Escape'&&pickerInput){e.preventDefault();e.stopPropagation();}closePicker();return;}
+  if(e.key==='ArrowDown'||e.key==='ArrowUp'){
+    e.preventDefault();if(!pickerInput)openPickerFor(e.target);if(!pickerInput)return;
+    const n=Math.min(pickerLimit,pickerEntries.length);if(!n)return;
+    pickerActive=(pickerActive+(e.key==='ArrowDown'?1:-1)+n)%n;
+    $('blockPickerList').querySelectorAll('[role=option]').forEach((el,i)=>el.setAttribute('aria-selected',String(i===pickerActive)));
+    const row=$('block-option-'+pickerActive);pickerInput.setAttribute('aria-activedescendant',row.id);row.scrollIntoView({block:'nearest'});
+  }else if(e.key==='Enter'&&pickerInput&&pickerActive>=0){e.preventDefault();e.stopPropagation();chooseTarget(pickerEntries[pickerActive]);}
+},true);
+document.addEventListener('scroll',e=>{if(pickerInput&&!e.target.closest?.('#blockPicker'))positionPicker();},true);
+window.addEventListener('resize',positionPicker);
+
+function stopSourceWatch() {state.sourceToken++;clearTimeout(state.sourceTimer);state.sourceTimer=null;}
+function pathKey(path) {const v=String(path||'').trim().replace(/^["']|["']$/g,'').replace(/\\/g,'/').replace(/\/+$/,'');return /^[a-z]:/i.test(v)?v.toLowerCase():v;}
+function renderSourcePreview() {
+  const preview=state.sourcePreview,active=Boolean(preview&&preview.status!=='idle');
+  $('sourcePreviewStrip').hidden=!active;
+  const label=({starting:'准备源预览',rendering:'源地图渲染中',done:'源地图已就绪',failed:'源预览失败'})[preview?.status]||'尚未分析';
+  ['sourcePreviewTag','sourcePreviewBadge'].forEach(id=>{$(id).textContent=label;$(id).className='tag'+(preview?.status==='done'?' good':preview?.status==='failed'?' warn':'');});
+  $('sourcePreviewText').textContent=preview?.message||'分析与源地图渲染独立进行。';
+  $('retrySourcePreview').hidden=preview?.status!=='failed';
+  if(!active||preview.status==='done'||$('beforeSlot').querySelector('iframe'))return;
+  const placeholder=$('beforeSlot').querySelector('.viewer-empty');
+  if(placeholder){placeholder.querySelector('strong').textContent=label;placeholder.querySelector('p').textContent=preview.message||'不必等转换完成；源地图准备好就会显示。';}
+}
+function adoptSourcePreview(data) {
+  if(!data.sourceWorld||!state.sourceServerWorld||pathKey(data.sourceWorld)!==pathKey(state.sourceServerWorld))return false;
+  setIconRevision(data.iconRevision);
+  const previous=state.sourcePreview?.status;
+  state.sourcePreview={status:data.sourceRenderStatus||'idle',message:data.sourceRenderMessage||'',generation:data.sourcePreviewGeneration,port:data.beforePort};
+  if(data.sourceRenderStatus==='done'&&data.beforePort)mountSide('before',data.beforePort,data.sourcePreviewGeneration);
+  if(data.sourceRenderStatus==='failed'&&$('beforeSlot').querySelector('iframe'))resetViewers(['before']);
+  renderSourcePreview();
+  if(previous!==data.sourceRenderStatus&&data.sourceRenderStatus==='done')refreshIconStatus();
+  return true;
+}
+async function watchSource(token) {
+  state.sourceTimer=null;if(token!==state.sourceToken)return;
+  try{
+    const data=await api('/api/status');if(token!==state.sourceToken)return;
+    if(!adoptSourcePreview(data)){
+      state.sourcePreview={status:'failed',message:'服务端源地图已改变，请重新分析当前地图。'};renderSourcePreview();return;
+    }
+  }catch(e){if(token!==state.sourceToken)return;state.sourcePreview={...state.sourcePreview,status:'rendering',message:'源预览状态连接中断，正在重试；分析和转换任务不受此查询影响。'};renderSourcePreview();}
+  if(token===state.sourceToken&&['starting','rendering'].includes(state.sourcePreview?.status))state.sourceTimer=setTimeout(()=>watchSource(token),1200);
+}
+async function beginSourcePreview() {
+  stopSourceWatch();const token=state.sourceToken,source=state.source;
+  state.sourcePreview={status:'starting',message:'正在启动源地图 BlueMap，随后与地图分析并行。'};renderSourcePreview();
+  try{
+    const data=await post('/api/render-source',{input:source},0);if(token!==state.sourceToken)return;
+    state.sourceServerWorld=data.sourceWorld;adoptSourcePreview(data);refreshIconStatus();
+    if(data.sourceRenderStatus==='rendering')state.sourceTimer=setTimeout(()=>watchSource(token),500);
+  }catch(e){if(token!==state.sourceToken)return;state.sourcePreview={status:'failed',message:e.message+' 源预览失败不会阻止分析。'};renderSourcePreview();}
+}
+$('showSourcePreview').onclick=()=>setTab('compare');$('retrySourcePreview').onclick=beginSourcePreview;
+
 function needsFromReport(report) {
   const rows=new Map();
   const add=(name,amount,to,kind)=>{name=nameOf(name);if(!name)return;const row=rows.get(name)||{name,count:0,becomes:new Set(),kind};row.count+=Number(amount)||0;if(to)row.becomes.add(canonical(to));if(kind==='lost')row.kind='lost';rows.set(name,row);};
@@ -285,13 +433,14 @@ function mappingRows() {
   return search?rows.filter(x=>[x.name,...x.becomes,state.drafts.get(x.name)||'',x.group||''].some(t=>t.toLowerCase().includes(search))):rows;
 }
 function renderMappings() {
+  closePicker();
   const rows=mappingRows(), pages=Math.max(1,Math.ceil(rows.length/state.pageSize));state.page=Math.min(pages,Math.max(1,state.page));
   document.querySelectorAll('[data-filter]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.filter===state.filter)));
   $('mappingRows').innerHTML=rows.slice((state.page-1)*state.pageSize,state.page*state.pageSize).map(row=>{
     const value=state.drafts.get(row.name)||'',bad=value.trim()&&!valid(canonical(value));
     const destinations=[...row.becomes].filter(Boolean);
-    const result=row.kind==='lost'?'<span class="tag warn">变成空气</span>':destinations.length?'<span title="'+esc(destinations.join(', '))+'" class="mono">'+esc(short(destinations[0]))+(destinations.length>1?' …':'')+'</span>':'<span class="muted">待分析</span>';
-    return '<tr><td><div class="block-cell">'+blockIcon(row.name)+'<div class="block-name"><b title="'+esc(row.name)+'">'+esc(short(row.name))+'</b><small>'+esc(row.group||row.name.split(':')[0])+'</small></div></div></td><td class="quantity">'+(row.count===null?'—':count(row.count))+'</td><td>'+result+'</td><td><div class="target-editor"><input class="map-input" data-from="'+esc(row.name)+'" aria-label="'+esc(row.name)+' 替换为" aria-invalid="'+Boolean(bad)+'" value="'+esc(value)+'" list="blockList" placeholder="默认行为" spellcheck="false"'+(state.busy?' disabled':'')+'><button class="row-reset" data-reset="'+esc(row.name)+'" aria-label="重置 '+esc(row.name)+'" title="清除自定义规则"'+(state.busy?' disabled':'')+'>'+icon('close')+'</button></div><small class="input-detail '+(bad?'error':value?'custom':'')+'">'+(bad?'格式无效，请使用 namespace:block':value?'自定义 · 重新转换后生效':'留空使用默认行为')+'</small></td></tr>';
+    const result=row.kind==='lost'?'<span class="tag warn">变成空气</span>':destinations.length?'<span class="result-block">'+blockIcon(destinations[0])+'<span title="'+esc(destinations.join(', '))+'" class="mono">'+esc(short(destinations[0]))+(destinations.length>1?' …':'')+'</span></span>':'<span class="muted">待分析</span>';
+    return '<tr><td><div class="block-cell">'+blockIcon(row.name)+'<div class="block-name"><b title="'+esc(row.name)+'">'+esc(short(row.name))+'</b><small>'+esc(row.group||row.name.split(':')[0])+'</small></div></div></td><td class="quantity">'+(row.count===null?'—':count(row.count))+'</td><td>'+result+'</td><td><div class="target-editor"><input class="map-input" data-from="'+esc(row.name)+'" aria-label="'+esc(row.name)+' 替换为" aria-invalid="'+Boolean(bad)+'" value="'+esc(value)+'" data-target-picker role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="blockPickerList" autocomplete="off" placeholder="默认行为" spellcheck="false"'+(state.busy?' disabled':'')+'><button class="picker-toggle" type="button" data-picker-toggle aria-label="打开带贴图的方块选择器">'+icon('right')+'</button><button class="row-reset" data-reset="'+esc(row.name)+'" aria-label="重置 '+esc(row.name)+'" title="清除自定义规则"'+(state.busy?' disabled':'')+'>'+icon('close')+'</button></div><small class="input-detail '+(bad?'error':value?'custom':'')+'">'+(bad?'格式无效，请使用 namespace:block':value?'自定义 · 重新转换后生效':'留空使用默认行为')+'</small></td></tr>';
   }).join('')||'<tr><td colspan="4" class="empty-table">'+(state.filter==='builtin'?'暂无内置规则；请确认本地服务连接。':state.report?'此筛选下没有方块。可切换筛选或添加自定义规则。':'先分析地图，或手动添加规则。')+'</td></tr>';
   $('tableSummary').textContent='共 '+rows.length+' 条 · 每页 '+state.pageSize+' 条';$('pageIndicator').textContent=state.page+' / '+pages;$('prevPage').disabled=state.page<=1;$('nextPage').disabled=state.page>=pages;
   $('needsCount').textContent=needsFromReport(state.report).length;
@@ -336,6 +485,7 @@ function ensureReady() {
 async function analyse() {
   if(!ensureReady())return;state.startedAt=Date.now();busy('scan');status('正在分析地图','使用当前映射进行本地临时试转；不会生成正式输出。','neutral',true);
   const key=scanSignature();
+  await beginSourcePreview(); // starts a process, not a wait for the completed render
   try{
     const data=await post('/api/scan',{input:state.source,mappings:buildMappings(),approximate:state.approximate},0);
     if(!data.report?.blocks)throw new Error('分析返回的报告不完整。');
@@ -379,12 +529,12 @@ async function loadConversionReport() {
   state.resultKey=state.run?.unknown?'':state.run?.key||'';state.scanKey=state.run?.scanKey||'';state.resultPath=state.run?.output||'';
   renderAll();
 }
-function resetViewers() {
-  ['before','after'].forEach(side=>{const slot=$(side+'Slot');slot.innerHTML='<div class="viewer-empty">'+icon(side==='before'?'map':'cube')+'<strong>等待'+(side==='before'?'源地图':'转换结果')+'预览</strong><p>完成转换后自动生成。首次渲染需要下载贴图。</p></div>';$(side==='before'?'openBefore':'openAfter').hidden=true;});
+function resetViewers(sides=['before','after']) {
+  sides.forEach(side=>{const slot=$(side+'Slot');slot.innerHTML='<div class="viewer-empty">'+icon(side==='before'?'map':'cube')+'<strong>等待'+(side==='before'?'源地图':'转换结果')+'预览</strong><p>分析时生成源预览，转换后生成结果预览。首次渲染需要下载贴图。</p></div>';$(side==='before'?'openBefore':'openAfter').hidden=true;});
 }
-function mountSide(side,port) {
+function mountSide(side,port,generation=0) {
   port=Number(port);if(!Number.isInteger(port)||port<1||port>65535)return;
-  const hostname=location.hostname==='127.0.0.1'?'127.0.0.1':'localhost';const url='http://'+hostname+':'+port+'/';
+  const hostname=location.hostname==='127.0.0.1'?'127.0.0.1':'localhost';const url='http://'+hostname+':'+port+'/?preview='+encodeURIComponent(generation);
   const slot=$(side+'Slot'),current=slot.querySelector('iframe');if(current?.getAttribute('src')===url)return;
   const frame=document.createElement('iframe');frame.src=url;frame.title=side==='before'?'源地图 BlueMap 3D 预览':'1.12.2 转换结果 BlueMap 3D 预览';slot.replaceChildren(frame);
   const link=$(side==='before'?'openBefore':'openAfter');link.href=url;link.hidden=false;
@@ -393,7 +543,7 @@ async function startRender(manual=false) {
   if(manual&&(state.busy||!state.resultReport))return;
   state.renderRequested=true;state.startedAt=Date.now();busy('render');status('正在生成预览','哪一侧先完成就先显示；转换结果已写入本地。','neutral',true);
   try{
-    const data=await post('/api/render');if(!data.alreadyRunning)resetViewers();
+    const data=await post('/api/render',{force:manual});if(!data.alreadyRunning)resetViewers(['after']);adoptSourcePreview(data);
     setTab('compare');startPolling();
   }catch(e){status('转换完成，预览未启动',e.message+' 可以稍后单独重新渲染。','warn');state.startedAt=0;busy('');stopPolling();}
 }
@@ -402,13 +552,13 @@ function stopPolling() {state.polling=false;clearTimeout(state.pollTimer);state.
 async function poll() {
   state.pollTimer=null;
   try{
-    const data=await api('/api/status');connection(true);state.failures=0;state.lastStatus=data;
+    const data=await api('/api/status');connection(true);state.failures=0;state.lastStatus=data;adoptSourcePreview(data);
     const active=data.status&&!['idle','done','failed'].includes(data.status);
     if(active){busy('convert');status(({reading:'正在读取地图',converting:'正在转换方块',reporting:'正在生成报告'})[data.status]||'正在转换',data.message||'本地任务执行中。','neutral',true,typeof data.progress==='number'?data.progress:null);}
     else if(data.status==='failed'){status('转换失败',data.message||'请查看本地程序日志。','bad');state.startedAt=0;busy('');stopPolling();return;}
     else if(data.status==='done') {
       await loadConversionReport();
-      if(data.beforePort)mountSide('before',data.beforePort);if(data.afterPort)mountSide('after',data.afterPort);
+      if(data.afterPort)mountSide('after',data.afterPort,data.resultPreviewGeneration);
       if(data.renderStatus==='rendering'){
         busy('render');if(data.renderElapsedSeconds)state.startedAt=Date.now()-data.renderElapsedSeconds*1000;
         status('正在生成预览',data.renderMessage||'正在渲染地图。','neutral',true);
@@ -437,6 +587,10 @@ async function recover() {
   }catch(e){}
   try{
     const data=await api('/api/status');connection(true);state.lastStatus=data;
+    if(data.sourceWorld&&pathKey(data.sourceWorld)===pathKey(state.source)){
+      state.sourceServerWorld=data.sourceWorld;adoptSourcePreview(data);
+      if(data.sourceRenderStatus==='rendering'){stopSourceWatch();const token=state.sourceToken;state.sourceTimer=setTimeout(()=>watchSource(token),500);}
+    }
     if(data.status==='idle'&&data.renderStatus!=='rendering'){state.run=null;try{sessionStorage.removeItem(SESSION);}catch(e){}status('准备就绪',state.source?'已恢复地图草稿，先分析再转换。':'选择一张地图，开始新的转换。');return;}
     if(!state.run)state.run={unknown:true};
     // Status API has no job identifier; recovered results are explicitly marked as unverified associations.
@@ -512,12 +666,12 @@ document.addEventListener('drop',e=>{if(![...(e.dataTransfer?.types||[])].includ
 setInterval(()=>{if(state.startedAt)$('elapsed').textContent=Math.max(0,Math.floor((Date.now()-state.startedAt)/1000))+' 秒';},1000);
 async function metadata() {
   const results=await Promise.allSettled([api('/api/target-blocks'),api('/api/approximations')]);
-  if(results[0].status==='fulfilled'&&!results[0].value.error){state.targets=(results[0].value.blocks||[]).filter(v=>typeof v==='string');$('blockList').replaceChildren(...state.targets.map(b=>{const option=document.createElement('option');option.value=b;return option;}));}
+  if(results[0].status==='fulfilled'&&!results[0].value.error){state.targets=(results[0].value.blocks||[]).filter(v=>typeof v==='string');state.targets=[...new Set(state.targets)].sort((a,b)=>a.localeCompare(b));if(pickerInput)renderPicker();}
   if(results[1].status==='fulfilled'&&!results[1].value.error){state.rules=(results[1].value.rules||[]).filter(r=>r&&typeof r.old_identifier==='string'&&typeof r.new_identifier==='string');renderMappings();}
   if(results.some(r=>r.status==='rejected'||r.value?.error))notify('部分方块候选或内置规则未加载，可重新连接后重试。','bad');
 }
 const previousReconnect=$('reconnect').onclick;$('reconnect').onclick=()=>{previousReconnect();metadata();};
-restore();theme();renderAll();recover();metadata();
+restore();theme();renderAll();recover();metadata();refreshIconStatus();
 window.addEventListener('pagehide',save);
 })();
 </script>

@@ -19,6 +19,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -60,6 +61,8 @@ public final class BlockIcons {
      * most of them would render as grey squares even though the block plainly still exists.
      */
     private static final Map<String, String> LEGACY_NAMES = Map.ofEntries(
+            Map.entry("chiseled_quartz_block", "quartz_block_chiseled"),
+            Map.entry("stripped_jungle_wood", "stripped_jungle_log"),
             Map.entry("log", "oak_log"),
             Map.entry("log2", "acacia_log"),
             Map.entry("planks", "oak_planks"),
@@ -172,7 +175,13 @@ public final class BlockIcons {
             "_button", "_pressure_plate"
     };
 
-    private final Path clientJar;
+    private Path clientJar;
+    private String archiveStamp = "";
+    private long revision = System.currentTimeMillis();
+    private final List<Path> searchRoots;
+    private final Map<String, String> texturePaths = new HashMap<>();
+    private static final String[] PREFIXES = {"assets/minecraft/textures/block/", "assets/minecraft/textures/blocks/",
+            "assets/minecraft/textures/item/", "assets/minecraft/textures/items/"};
     private final Set<String> textureNames = new HashSet<>();
     private final Map<String, BufferedImage> textureCache = new ConcurrentHashMap<>();
     private final Map<String, byte[]> iconCache = new ConcurrentHashMap<>();
@@ -181,11 +190,32 @@ public final class BlockIcons {
     /**
      * Create an icon renderer, locating the game files once.
      */
-    public BlockIcons() {
-        this.clientJar = findClientJar();
-        if (clientJar != null) {
-            indexTextures();
-        }
+    public BlockIcons() { this(defaultRoots()); }
+
+    /** Explicit roots make discovery testable without accessing a user's real Minecraft installation. */
+    BlockIcons(List<Path> roots) {
+        searchRoots = List.copyOf(roots);
+        refresh(null, null);
+    }
+
+    /** Rediscover after a source selection or BlueMap asset download. Misses never become permanent. */
+    public synchronized void refresh(Path world, Path viewersRoot) {
+        Path found = findClientJar(world, viewersRoot);
+        String stamp = "";
+        try {
+            if (found != null) stamp = found + ":" + Files.size(found) + ":" + Files.getLastModifiedTime(found).toMillis();
+        } catch (IOException e) { found = null; }
+        if (stamp.equals(archiveStamp)) return;
+        clientJar = found; archiveStamp = stamp;
+        textureNames.clear(); texturePaths.clear(); textureCache.clear(); iconCache.clear();
+        if (clientJar != null) indexTextures();
+        revision++;
+    }
+
+    public synchronized long revision() { return revision; }
+
+    public synchronized boolean hasTexture(String rawName) {
+        return firstExisting(mainCandidates(normalise(rawName))) != null;
     }
 
     /**
@@ -193,7 +223,7 @@ public final class BlockIcons {
      *
      * @return true if a Minecraft installation with block textures was found.
      */
-    public boolean isAvailable() {
+    public synchronized boolean isAvailable() {
         return clientJar != null && !textureNames.isEmpty();
     }
 
@@ -202,8 +232,8 @@ public final class BlockIcons {
      *
      * @return a short description.
      */
-    public String describe() {
-        if (clientJar == null) return "no Minecraft installation found";
+    public synchronized String describe() {
+        if (clientJar == null) return "尚未找到本地客户端贴图；选择存档后会沿启动器目录查找，BlueMap 下载完成后会自动重试。";
         return clientJar + " (" + textureNames.size() + " block textures)";
     }
 
@@ -213,7 +243,7 @@ public final class BlockIcons {
      * @param rawName the block identifier, with or without a namespace, or a Chunker block description.
      * @return PNG bytes, never null - a plain grey cube stands in when the texture cannot be found.
      */
-    public byte[] icon(String rawName) {
+    public synchronized byte[] icon(String rawName) {
         String name = normalise(rawName);
         byte[] cached = iconCache.get(name);
         if (cached != null) return cached;
@@ -254,7 +284,8 @@ public final class BlockIcons {
         BufferedImage top = topName.equals(sideName) ? side : loadTexture(topName);
         if (top == null) top = side;
 
-        return encode(compose(top, side));
+        String entry = texturePaths.get(sideName);
+        return encode(entry != null && (entry.contains("/item/") || entry.contains("/items/")) ? side : compose(top, side));
     }
 
     /**
@@ -359,6 +390,11 @@ public final class BlockIcons {
         candidates.add(base + "_bottom");
         candidates.add(base + "_end");
         candidates.add(base + "_outside");
+        // All-bark wood uses the corresponding log side texture, not a non-existent *_wood.png.
+        if (base.endsWith("_wood")) candidates.add(base.substring(0, base.length() - 5) + "_log");
+        if (base.endsWith("_planks")) candidates.add("planks_" + base.substring(0, base.length() - 7));
+        if (base.endsWith("_log")) candidates.add("log_" + base.substring(0, base.length() - 4));
+        if (base.endsWith("_wool")) candidates.add("wool_colored_" + base.substring(0, base.length() - 5));
 
         // A shape made of a material: the texture belongs to the material. Both the plural and the plain form are
         // tried because Minecraft is inconsistent about it - nether_brick_stairs is made of nether_bricks, while
@@ -418,7 +454,8 @@ public final class BlockIcons {
 
         BufferedImage texture = null;
         try (ZipFile zip = new ZipFile(clientJar.toFile())) {
-            ZipEntry entry = zip.getEntry("assets/minecraft/textures/block/" + name + ".png");
+            String path = texturePaths.get(name);
+            ZipEntry entry = path == null ? null : zip.getEntry(path);
             if (entry != null) {
                 try (InputStream stream = zip.getInputStream(entry)) {
                     BufferedImage raw = ImageIO.read(stream);
@@ -524,95 +561,108 @@ public final class BlockIcons {
     private void indexTextures() {
         try (ZipFile zip = new ZipFile(clientJar.toFile())) {
             var entries = zip.entries();
-            String prefix = "assets/minecraft/textures/block/";
             while (entries.hasMoreElements()) {
-                ZipEntry entry = entries.nextElement();
-                String path = entry.getName();
-                if (!path.startsWith(prefix) || !path.endsWith(".png")) continue;
-                textureNames.add(path.substring(prefix.length(), path.length() - ".png".length()));
-            }
-        } catch (Exception ignored) {
-            // Without an index every icon falls back to the placeholder, which the page still renders sensibly.
-        }
-    }
-
-    /**
-     * Find a Minecraft installation with block textures on this machine.
-     * <p>
-     * The search mirrors the one used to find worlds, and for the same reason: launchers keep the game in a handful
-     * of recognisable layouts, and looking one and two levels below the usual folders covers them without walking
-     * the whole disk.
-     * <p>
-     * Where several versions are installed the one with the most textures wins. That is a stand-in for "the newest
-     * one", and it is the right one to use: the icons are drawn for blocks being read out of a modern world, so the
-     * modern names and textures are the ones that will match.
-     *
-     * @return the chosen client jar, or null if none was found.
-     */
-    private static Path findClientJar() {
-        List<Path> roots = new ArrayList<>();
-        String home = System.getProperty("user.home");
-        roots.add(Path.of(home, "AppData/Roaming/.minecraft"));
-        roots.add(Path.of(home, ".minecraft"));
-
-        for (String parent : new String[]{"Desktop", "Documents", "Downloads"}) {
-            Path directory = Path.of(home, parent);
-            if (!Files.isDirectory(directory)) continue;
-            try (DirectoryStream<Path> stream = Files.newDirectoryStream(directory)) {
-                for (Path child : stream) {
-                    if (!Files.isDirectory(child)) continue;
-                    roots.add(child.resolve(".minecraft"));
-                    roots.add(child);
-                }
-            } catch (IOException ignored) {
-                // An unreadable folder simply contributes nothing.
-            }
-        }
-
-        Path best = null;
-        int bestCount = 0;
-        Map<Path, Integer> counted = new HashMap<>();
-        for (Path root : roots) {
-            Path versions = root.resolve("versions");
-            if (!Files.isDirectory(versions)) continue;
-            try (DirectoryStream<Path> stream = Files.newDirectoryStream(versions)) {
-                for (Path version : stream) {
-                    if (!Files.isDirectory(version)) continue;
-                    try (DirectoryStream<Path> jars = Files.newDirectoryStream(version, "*.jar")) {
-                        for (Path jar : jars) {
-                            int count = counted.computeIfAbsent(jar, BlockIcons::countBlockTextures);
-                            if (count > bestCount) {
-                                bestCount = count;
-                                best = jar;
-                            }
-                        }
-                    } catch (IOException ignored) {
-                        // Skip a version whose jar cannot be listed.
+                String path = entries.nextElement().getName();
+                for (String prefix : PREFIXES) {
+                    if (path.startsWith(prefix) && path.endsWith(".png")) {
+                        String name = path.substring(prefix.length(), path.length() - 4);
+                        // Prefer block texture over an item sprite with the same name.
+                        boolean block = prefix.contains("/block/") || prefix.contains("/blocks/");
+                        if (block || !texturePaths.containsKey(name)) texturePaths.put(name, path);
+                        textureNames.add(name);
                     }
                 }
-            } catch (IOException ignored) {
-                // Skip an unreadable versions folder.
             }
-        }
-        return bestCount > 0 ? best : null;
+        } catch (IOException ignored) { /* status reports unavailable; a later refresh can retry */ }
     }
 
-    /**
-     * Count how many block textures a jar holds, used to tell a real client jar from a launcher or a patch.
-     *
-     * @param jar the jar to inspect.
-     * @return the number of block textures, or 0 if it is not a client jar.
-     */
+    private static List<Path> defaultRoots() {
+        String home = System.getProperty("user.home");
+        List<Path> roots = new ArrayList<>();
+        roots.add(Path.of(home, "AppData/Roaming/.minecraft"));
+        roots.add(Path.of(home, ".minecraft"));
+        roots.add(Path.of(home, "Library/Application Support/minecraft"));
+        String appData = System.getenv("APPDATA");
+        if (appData != null) roots.add(Path.of(appData, ".minecraft"));
+        for (String name : List.of("Desktop", "Documents", "Downloads")) {
+            Path parent = Path.of(home, name);
+            try (DirectoryStream<Path> children = Files.newDirectoryStream(parent)) {
+                int n = 0;
+                for (Path child : children) {
+                    if (++n > 128) break;
+                    if (Files.isDirectory(child)) { roots.add(child); roots.add(child.resolve(".minecraft")); }
+                }
+            } catch (IOException ignored) { }
+        }
+        return roots;
+    }
+
+    /** Search the selected world's ancestors first, including version-isolated third-party launcher layouts. */
+    private Path findClientJar(Path world, Path viewersRoot) {
+        Set<Path> roots = new LinkedHashSet<>();
+        if (world != null) {
+            Path parent = world.toAbsolutePath().normalize();
+            for (int n = 0; parent != null && n < 12; n++, parent = parent.getParent()) {
+                roots.add(parent);
+                roots.add(parent.resolve(".minecraft"));
+            }
+        }
+        roots.addAll(searchRoots);
+        Set<Path> jars = new LinkedHashSet<>();
+        for (Path root : roots) {
+            // Version-isolated worlds: .../versions/<version>/saves/<world>, where the jar is at an ancestor.
+            if (world != null && root.getParent() != null && root.getParent().getFileName() != null
+                    && root.getParent().getFileName().toString().equals("versions")) addArchives(root, jars);
+            Path versions = root.resolve("versions");
+            try (DirectoryStream<Path> children = Files.newDirectoryStream(versions)) {
+                int n = 0;
+                for (Path version : children) { if (++n > 128) break; if (Files.isDirectory(version)) addArchives(version, jars); }
+            } catch (IOException ignored) { }
+        }
+        // BlueMap downloads a client archive under its configured data directory. Never traverse rendered tiles.
+        if (viewersRoot != null) {
+            try (DirectoryStream<Path> workdirs = Files.newDirectoryStream(viewersRoot)) {
+                int n = 0;
+                for (Path work : workdirs) {
+                    if (++n > 64) break;
+                    Path data = work.resolve("data");
+                    if (!Files.isDirectory(data)) continue;
+                    try (var files = Files.find(data, 4, (p, attrs) -> attrs.isRegularFile() && archive(p))) {
+                        files.limit(32).forEach(jars::add);
+                    } catch (IOException ignored) { }
+                }
+            } catch (IOException ignored) { }
+        }
+        if (clientJar != null && Files.isRegularFile(clientJar)) jars.add(clientJar);
+        Path best = null; int bestCount = 0;
+        for (Path jar : jars) {
+            int count = countBlockTextures(jar);
+            if (count > bestCount) { bestCount = count; best = jar; }
+        }
+        return best;
+    }
+
+    private static boolean archive(Path path) {
+        String name = path.getFileName().toString().toLowerCase(Locale.ROOT);
+        return name.endsWith(".jar") || name.endsWith(".zip");
+    }
+
+    private static void addArchives(Path folder, Set<Path> found) {
+        try (DirectoryStream<Path> files = Files.newDirectoryStream(folder)) {
+            int n = 0;
+            for (Path file : files) { if (++n > 128) break; if (Files.isRegularFile(file) && archive(file)) found.add(file); }
+        } catch (IOException ignored) { }
+    }
+
     private static int countBlockTextures(Path jar) {
         try (ZipFile zip = new ZipFile(jar.toFile())) {
             int count = 0;
             var entries = zip.entries();
             while (entries.hasMoreElements()) {
-                if (entries.nextElement().getName().startsWith("assets/minecraft/textures/block/")) count++;
+                String path = entries.nextElement().getName();
+                if (path.endsWith(".png") && (path.startsWith(PREFIXES[0]) || path.startsWith(PREFIXES[1]))) count++;
             }
             return count;
-        } catch (Exception ignored) {
-            return 0;
-        }
+        } catch (IOException ignored) { return 0; }
     }
 }

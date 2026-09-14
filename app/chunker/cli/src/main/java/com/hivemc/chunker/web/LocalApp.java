@@ -40,23 +40,17 @@ public class LocalApp {
     private static final Gson GSON = new Gson();
 
     private final Path toolDirectory;
-    private final Path blueMapDirectory;
-    private final Path javaExecutable;
     private final BlueMapRunner blueMap;
-    private final BlockIcons blockIcons = new BlockIcons();
+    private final BlockIcons blockIcons;
+    private HttpServer server;
+    private java.util.concurrent.ExecutorService httpWorkers;
 
     private final AtomicReference<ConversionJob> job = new AtomicReference<>();
     private final AtomicReference<Path> lastResultWorld = new AtomicReference<>();
     private final AtomicReference<Path> lastSourceWorld = new AtomicReference<>();
-    private final List<Process> viewers = new ArrayList<>();
-
-    // Rendering the two viewers takes minutes on a large world, so it runs in the background and reports progress
-    // rather than holding the request open.
-    private final AtomicReference<String> renderStatus = new AtomicReference<>("idle");
-    private final AtomicReference<String> renderMessage = new AtomicReference<>("");
-    private volatile int renderPortBefore;
-    private volatile int renderPortAfter;
-    private volatile long renderStartedAt;
+    private final PreviewManager previews;
+    private final java.util.concurrent.atomic.AtomicBoolean scanning = new java.util.concurrent.atomic.AtomicBoolean();
+    private volatile Path iconWorld;
 
     // The unmapped blocks found by the most recent analysis, so the editor can suggest what to map.
     private final AtomicReference<String> lastScan = new AtomicReference<>();
@@ -71,10 +65,16 @@ public class LocalApp {
      * @param javaExecutable  the java binary used to launch BlueMap.
      */
     public LocalApp(Path toolDirectory, Path blueMapDirectory, Path javaExecutable) {
-        this.toolDirectory = toolDirectory;
-        this.blueMapDirectory = blueMapDirectory;
-        this.javaExecutable = javaExecutable;
-        this.blueMap = new BlueMapRunner(blueMapDirectory, javaExecutable);
+        this(toolDirectory, new BlueMapRunner(blueMapDirectory, javaExecutable), new BlockIcons());
+    }
+
+    /** Injectable renderer for HTTP lifecycle tests; production always uses the real BlueMap runner. */
+    LocalApp(Path toolDirectory, BlueMapRunner runner, BlockIcons icons) {
+        this.toolDirectory = toolDirectory.toAbsolutePath().normalize();
+        this.blueMap = runner;
+        this.blockIcons = icons;
+        this.previews = new PreviewManager(this.toolDirectory.resolve("viewers"), blueMap,
+                () -> blockIcons.refresh(iconWorld, this.toolDirectory.resolve("viewers")));
     }
 
     /**
@@ -85,7 +85,7 @@ public class LocalApp {
      */
     public void start(int port) throws IOException {
         this.port = port;
-        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
         server.createContext("/", this::handleIndex);
         server.createContext("/api/pick-folder", this::handlePickFolder);
         server.createContext("/api/find-worlds", this::handleFindWorlds);
@@ -97,9 +97,13 @@ public class LocalApp {
         server.createContext("/api/scan", this::handleScan);
         server.createContext("/api/approximations", this::handleApproximations);
         server.createContext("/api/block-icon", this::handleBlockIcon);
+        server.createContext("/api/icon-status", this::handleIconStatus);
+        server.createContext("/api/render-source", this::handleSourceRender);
         server.createContext("/api/render", this::handleRender);
-        server.setExecutor(Executors.newFixedThreadPool(8));
+        httpWorkers = Executors.newFixedThreadPool(8);
+        server.setExecutor(httpWorkers);
         server.start();
+        this.port = server.getAddress().getPort();
     }
 
     /**
@@ -115,12 +119,9 @@ public class LocalApp {
      * Stop the map viewers this application started.
      */
     public void stopViewers() {
-        synchronized (viewers) {
-            for (Process process : viewers) {
-                process.destroy();
-            }
-            viewers.clear();
-        }
+        previews.close();
+        if (server != null) server.stop(0);
+        if (httpWorkers != null) httpWorkers.shutdownNow();
     }
 
     private void handleIndex(HttpExchange exchange) throws IOException {
@@ -399,9 +400,9 @@ public class LocalApp {
         }
     }
 
-    private void handleConvertInner(HttpExchange exchange, JsonObject response) throws IOException {
+    private synchronized void handleConvertInner(HttpExchange exchange, JsonObject response) throws IOException {
         ConversionJob running = job.get();
-        if (running != null && !running.isFinished()) {
+        if (scanning.get() || previews.after().status().equals("rendering") || (running != null && !running.isFinished())) {
             response.addProperty("ok", false);
             response.addProperty("error", "已经有一个转换正在进行。");
             respondJson(exchange, GSON.toJson(response));
@@ -430,7 +431,7 @@ public class LocalApp {
 
         Path input;
         try {
-            input = Path.of(inputText);
+            input = Path.of(inputText).toAbsolutePath().normalize();
         } catch (Exception e) {
             // Invalid characters in a path make Path.of throw, and pasting a path from another program is a
             // perfectly normal way to end up with those.
@@ -458,18 +459,28 @@ public class LocalApp {
             return;
         }
 
+        input = input.toRealPath();
+
         // A folder window hands out a path with quotes around it, and some tools prefix it with file://. None of
         // that is part of the path, so it is stripped before use rather than being reported as "not a world".
         String outputText = request.has("output") ? cleanPath(request.get("output").getAsString()) : "";
         Path output = outputText.isEmpty()
                 ? toolDirectory.resolve("converted").resolve(input.getFileName().toString() + "_1.12.2")
                 : Path.of(outputText);
+        output = output.toAbsolutePath().normalize();
 
         boolean shiftToFit = !request.has("shiftToFit") || request.get("shiftToFit").getAsBoolean();
         boolean clearContainers = !request.has("clearContainers") || request.get("clearContainers").getAsBoolean();
 
         try {
+            // Resolve the existing ancestor BEFORE creating anything, including symlinked parents.
+            output = resolveFutureDirectory(output);
+            if (output.equals(input) || output.startsWith(input) || input.startsWith(output))
+                throw new IOException("输出目录必须与源地图分开，不能相同或互相嵌套。");
             Files.createDirectories(output);
+            output = output.toRealPath();
+            if (output.startsWith(input) || input.startsWith(output))
+                throw new IOException("输出目录与源地图重叠。");
         } catch (IOException e) {
             response.addProperty("ok", false);
             response.addProperty("error", "无法创建输出文件夹：" + e.getMessage());
@@ -477,26 +488,12 @@ public class LocalApp {
             return;
         }
 
-        Path previousSource = lastSourceWorld.get();
-        Path previousOutput = lastResultWorld.get();
-        boolean sameTargets = input.equals(previousSource) && output.equals(previousOutput);
+        // Reuse the independently started source; only invalidate a result belonging to a different project.
+        previews.prepareConversion(input, output);
+        iconWorld = input;
+        blockIcons.refresh(input, toolDirectory.resolve("viewers"));
         lastSourceWorld.set(input);
         lastResultWorld.set(output);
-
-        // Converting the same world into the same folder again deliberately leaves the viewers running. The
-        // converted side is served by a watcher, so it notices the output being rewritten and re-renders only the
-        // chunks whose contents actually changed - which is what makes an edited mapping show up without waiting
-        // for a fresh render of the whole map. Tearing the viewers down here would throw that away.
-        if (!sameTargets) {
-            stopViewers();
-            renderPortBefore = 0;
-            renderPortAfter = 0;
-            renderStatus.set("idle");
-        } else {
-            // The map is about to be rewritten under a viewer that is already showing it. Saying so is the
-            // difference between "my edit did nothing" and "the preview is picking it up itself".
-            renderMessage.set("转换结果正在重新写入，预览会自动更新。");
-        }
 
         // User-supplied block mappings, as the same JSON the command line accepts. The built-in approximations are
         // layered underneath them unless the user turns them off, since a build losing every wall and every stripped
@@ -515,6 +512,20 @@ public class LocalApp {
         response.addProperty("ok", true);
         response.addProperty("output", output.toAbsolutePath().toString());
         respondJson(exchange, GSON.toJson(response));
+    }
+
+    /** Resolve a not-yet-created directory through its nearest existing real parent, without writing. */
+    private static Path resolveFutureDirectory(Path path) throws IOException {
+        Path parent = path.toAbsolutePath().normalize();
+        java.util.ArrayDeque<Path> suffix = new java.util.ArrayDeque<>();
+        while (!Files.exists(parent, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            suffix.addFirst(parent.getFileName());
+            parent = parent.getParent();
+            if (parent == null) throw new IOException("输出目录没有可用的父目录。");
+        }
+        Path resolved = parent.toRealPath();
+        for (Path part : suffix) resolved = resolved.resolve(part);
+        return resolved;
     }
 
     private void handleStatus(HttpExchange exchange) throws IOException {
@@ -539,18 +550,7 @@ public class LocalApp {
             }
         }
 
-        // Preview progress travels with the same status call, so the page needs only one poll for everything.
-        response.addProperty("renderStatus", renderStatus.get());
-        response.addProperty("renderMessage", renderMessage.get());
-        // Rendering takes minutes on a real build. Without a number that keeps moving the page looks frozen even
-        // though it is working, so the elapsed time is reported and the page ticks it up between polls.
-        if (renderStartedAt > 0) {
-            response.addProperty("renderElapsedSeconds", (System.currentTimeMillis() - renderStartedAt) / 1000);
-        }
-        int before = renderPortBefore;
-        int after = renderPortAfter;
-        if (before > 0) response.addProperty("beforePort", before);
-        if (after > 0) response.addProperty("afterPort", after);
+        addPreviewStatus(response);
         respondJson(exchange, GSON.toJson(response));
     }
 
@@ -587,38 +587,75 @@ public class LocalApp {
         safeRespondJson(exchange, GSON.toJson(result));
     }
 
-    private void handleRender(HttpExchange exchange) throws IOException {
+    /** Render the converted side without restarting an already rendered/in-flight source. */
+    private synchronized void handleRender(HttpExchange exchange) throws IOException {
         JsonObject response = new JsonObject();
-        Path source = lastSourceWorld.get();
-        Path result = lastResultWorld.get();
-        if (source == null || result == null) {
-            response.addProperty("ok", false);
-            response.addProperty("error", "还没有可预览的转换结果。");
-            respondJson(exchange, GSON.toJson(response));
-            return;
-        }
-
-        // Rendering is started and then left to run: both maps take minutes on a real build, and a request that
-        // holds the connection open that long looks like a hung page.
-        String stage = renderStatus.get();
-        if (stage.equals("rendering")) {
+        try {
+            ConversionJob current = job.get();
+            Path source = lastSourceWorld.get(), result = lastResultWorld.get();
+            if (source == null || result == null || current == null || !current.isFinished() || current.isFailed())
+                throw new IOException("还没有成功转换的结果可供预览。");
+            if (!previews.before().world().equals(source.toString()))
+                throw new IOException("当前选择的源地图已改变，请先转换当前地图。");
+            String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            boolean force = !body.isBlank() && JsonParser.parseString(body).getAsJsonObject().has("force")
+                    && JsonParser.parseString(body).getAsJsonObject().get("force").getAsBoolean();
+            boolean started = previews.result(source, result, force);
             response.addProperty("ok", true);
-            response.addProperty("alreadyRunning", true);
-            respondJson(exchange, GSON.toJson(response));
-            return;
+            response.addProperty("alreadyRunning", !started);
+            addPreviewStatus(response);
+        } catch (Exception e) {
+            response.addProperty("ok", false); response.addProperty("error", describe(e));
         }
+        respondJson(exchange, GSON.toJson(response));
+    }
 
-        renderStatus.set("rendering");
-        renderMessage.set("正在渲染转换前的地图…");
-        renderPortBefore = 0;
-        renderPortAfter = 0;
-        renderStartedAt = System.currentTimeMillis();
-        Thread worker = new Thread(() -> runRender(source, result), "render");
-        worker.setDaemon(true);
-        worker.start();
+    /** Source-only rendering is available before a conversion and never writes to the source world. */
+    private synchronized void handleSourceRender(HttpExchange exchange) throws IOException {
+        JsonObject response = new JsonObject();
+        try {
+            JsonObject request = JsonParser.parseString(new String(exchange.getRequestBody().readAllBytes(),
+                    StandardCharsets.UTF_8)).getAsJsonObject();
+            Path source = Path.of(cleanPath(request.get("input").getAsString())).toRealPath();
+            if (!Files.isRegularFile(source.resolve("level.dat"))) throw new IOException("源目录中没有 level.dat。");
+            ConversionJob running = job.get();
+            if ((scanning.get() || previews.after().status().equals("rendering") || (running != null && !running.isFinished()))
+                    && !previews.before().world().equals(source.toString()))
+                throw new IOException("任务进行中，不能切换源地图。");
+            response.addProperty("started", previews.source(source));
+            iconWorld = source;
+            blockIcons.refresh(source, toolDirectory.resolve("viewers"));
+            response.addProperty("ok", true);
+            addPreviewStatus(response);
+        } catch (Exception e) {
+            response.addProperty("ok", false); response.addProperty("error", describe(e));
+        }
+        respondJson(exchange, GSON.toJson(response));
+    }
 
-        response.addProperty("ok", true);
-        response.addProperty("started", true);
+    private void addPreviewStatus(JsonObject response) {
+        PreviewManager.Snapshot source = previews.before(), result = previews.after();
+        response.addProperty("sourceWorld", source.world());
+        response.addProperty("sourceRenderStatus", source.status());
+        response.addProperty("sourceRenderMessage", source.message());
+        response.addProperty("sourcePreviewGeneration", source.generation());
+        response.addProperty("sourceRenderElapsedSeconds", source.elapsedSeconds());
+        response.addProperty("beforePort", source.port());
+        response.addProperty("resultWorld", result.world());
+        response.addProperty("renderStatus", result.status());
+        response.addProperty("renderMessage", result.message());
+        response.addProperty("resultPreviewGeneration", result.generation());
+        response.addProperty("renderElapsedSeconds", result.elapsedSeconds());
+        response.addProperty("afterPort", result.port());
+        response.addProperty("iconRevision", blockIcons.revision());
+    }
+
+    private void handleIconStatus(HttpExchange exchange) throws IOException {
+        JsonObject response = new JsonObject();
+        response.addProperty("available", blockIcons.isAvailable());
+        response.addProperty("revision", blockIcons.revision());
+        response.addProperty("message", blockIcons.describe());
+        exchange.getResponseHeaders().set("Cache-Control", "no-store");
         respondJson(exchange, GSON.toJson(response));
     }
 
@@ -655,8 +692,9 @@ public class LocalApp {
             }
         }
 
-        byte[] png = blockIcons.icon(name);
+        byte[] png = blockIcons.hasTexture(name) ? blockIcons.icon(name) : new byte[0];
         if (png.length == 0) {
+            exchange.getResponseHeaders().set("Cache-Control", "no-store");
             respond(exchange, 404, "image/png", "");
             return;
         }
@@ -671,55 +709,6 @@ public class LocalApp {
     }
 
     /**
-     * Render both sides and bring up their viewers, reporting progress as it goes.
-     * <p>
-     * Each side is published the moment it is ready rather than at the end. Rendering a real build takes minutes per
-     * side, and holding both back until the second finishes means the user stares at an empty page for twice as long
-     * as they have to - with the completed first half sitting there unshown.
-     */
-    private void runRender(Path source, Path result) {
-        try {
-            stopViewers();
-            Path viewersRoot = toolDirectory.resolve("viewers");
-            Path sourceWork = viewersRoot.resolve("source");
-            Path resultWork = viewersRoot.resolve("result");
-
-            renderMessage.set("正在渲染转换前的地图（源存档）…这通常需要几分钟");
-            blueMap.render(true, source, sourceWork, BlueMapRunner.SOURCE_PORT);
-
-            // The source map is finished, so let the user start looking at it while the other side renders.
-            renderMessage.set("转换前的地图已渲染完成，正在渲染转换后的地图…");
-            Process before = blueMap.startWebServer(true, sourceWork);
-            synchronized (viewers) {
-                if (before != null) viewers.add(before);
-            }
-            waitForPort(BlueMapRunner.SOURCE_PORT);
-            renderPortBefore = BlueMapRunner.SOURCE_PORT;
-
-            renderMessage.set("正在渲染转换后的地图（1.12.2）…这通常也需要几分钟");
-            blueMap.render(false, result, resultWork, BlueMapRunner.RESULT_PORT);
-
-            renderMessage.set("正在启动预览服务…");
-            // The converted side is served by a watcher rather than a plain web server. Editing a mapping and
-            // converting again rewrites the output folder, and the watcher re-renders just the chunks that changed
-            // instead of the whole map - which is the difference between the preview following an edit in seconds
-            // and not following it at all.
-            Process after = blueMap.startWatcher(false, resultWork);
-            synchronized (viewers) {
-                if (after != null) viewers.add(after);
-            }
-            waitForPort(BlueMapRunner.RESULT_PORT);
-
-            renderPortAfter = BlueMapRunner.RESULT_PORT;
-            renderMessage.set("预览已就绪。");
-            renderStatus.set("done");
-        } catch (Exception e) {
-            renderMessage.set("预览渲染失败：" + describe(e));
-            renderStatus.set("failed");
-        }
-    }
-
-    /**
      * Work out what would be lost, without converting anything.
      * <p>
      * This exists because the unmapped list is only useful before a conversion: afterwards the blocks are already
@@ -729,6 +718,16 @@ public class LocalApp {
      */
     private void handleScan(HttpExchange exchange) throws IOException {
         JsonObject response = new JsonObject();
+        synchronized (this) {
+            ConversionJob running = job.get();
+            if (scanning.get() || (running != null && !running.isFinished())) {
+                response.addProperty("ok", false);
+                response.addProperty("error", "已有分析或转换正在进行。");
+                respondJson(exchange, GSON.toJson(response));
+                return;
+            }
+            scanning.set(true);
+        }
         try {
             String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
             JsonObject request = JsonParser.parseString(body).getAsJsonObject();
@@ -740,13 +739,18 @@ public class LocalApp {
                 return;
             }
 
-            Path input = Path.of(inputText);
+            Path input = Path.of(inputText).toRealPath();
             if (!Files.isDirectory(input) || !Files.isRegularFile(input.resolve("level.dat"))) {
                 response.addProperty("ok", false);
                 response.addProperty("error", "这个文件夹不是存档文件夹（里面没有 level.dat）。");
                 respondJson(exchange, GSON.toJson(response));
                 return;
             }
+
+            // Start before the synchronous trial conversion, not after its HTTP response.
+            previews.source(input);
+            iconWorld = input;
+            blockIcons.refresh(input, toolDirectory.resolve("viewers"));
 
             String mappings = request.has("mappings") && !request.get("mappings").isJsonNull()
                     ? request.get("mappings").getAsString()
@@ -774,6 +778,8 @@ public class LocalApp {
         } catch (Exception e) {
             response.addProperty("ok", false);
             response.addProperty("error", describe(e));
+        } finally {
+            scanning.set(false);
         }
         respondJson(exchange, GSON.toJson(response));
     }
@@ -794,28 +800,9 @@ public class LocalApp {
     }
 
     /**
-     * Wait briefly for a viewer to start listening, so the page is not pointed at a dead port.
-     */
-    private void waitForPort(int port) {
-        for (int attempt = 0; attempt < 60; attempt++) {
-            try (java.net.Socket socket = new java.net.Socket()) {
-                socket.connect(new InetSocketAddress("127.0.0.1", port), 500);
-                return;
-            } catch (IOException ignored) {
-                try {
-                    Thread.sleep(250);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    return;
-                }
-            }
-        }
-    }
-
-    /**
      * Tidy up a path that was pasted or dropped in, rather than treating its packaging as part of the path.
      * <p>
-     * Pasting a folder path from a file window arrives wrapped in quotes, and some tools produce a file:// URL.
+     * Pasting a folder path from a file window arrives wrapped in quotes, and some tools prefix it with file:// URL.
      * Neither is something the user typed deliberately, and rejecting them as "not a world" sends the user looking
      * in the wrong place entirely.
      *

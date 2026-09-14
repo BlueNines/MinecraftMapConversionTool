@@ -71,19 +71,15 @@ public class BlueMapRunner {
         );
         builder.directory(workFolder.toFile());
         builder.redirectErrorStream(true);
+        Path log = workFolder.resolve("render.log");
+        builder.redirectOutput(log.toFile());
         Process process = builder.start();
-
-        // Drain the output so the child cannot block on a full pipe while we wait for it.
-        StringBuilder output = new StringBuilder();
-        try (var reader = new java.io.BufferedReader(new java.io.InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                output.append(line).append(System.lineSeparator());
-            }
-        }
-        int exit = process.waitFor();
-        if (exit != 0) {
-            throw new IOException("BlueMap rendering failed (exit " + exit + "):" + System.lineSeparator() + output);
+        try {
+            int exit = process.waitFor();
+            if (exit != 0) throw new IOException("BlueMap rendering failed (exit " + exit + "):\n" + tail(log));
+        } finally {
+            // waitFor is interruptible. Changing projects must also stop the renderer, not just its Java thread.
+            if (process.isAlive()) stopProcess(process);
         }
         return webRoot;
     }
@@ -231,6 +227,39 @@ public class BlueMapRunner {
      */
     private static String minecraftVersion(boolean modern) {
         return modern ? "1.21" : "1.12.2";
+    }
+
+    /** Wait for this specific process; a dead child or a timeout must not be published as a ready iframe. */
+    public void awaitServer(Process process, int port) throws IOException, InterruptedException {
+        for (int attempt = 0; attempt < 100; attempt++) {
+            if (!process.isAlive()) throw new IOException("BlueMap web server exited before becoming ready.");
+            try (java.net.Socket socket = new java.net.Socket()) {
+                socket.connect(new java.net.InetSocketAddress("127.0.0.1", port), 200);
+                if (!process.isAlive()) throw new IOException("BlueMap web server exited.");
+                return;
+            } catch (IOException e) { Thread.sleep(200); }
+        }
+        throw new IOException("Timed out waiting for BlueMap on port " + port);
+    }
+
+    /** Terminate only a child process owned by this app, including on cancellation/shutdown. */
+    static void stopProcess(Process process) {
+        process.destroy();
+        try {
+            if (!process.waitFor(500, java.util.concurrent.TimeUnit.MILLISECONDS)) process.destroyForcibly();
+        } catch (InterruptedException e) {
+            process.destroyForcibly();
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private static String tail(Path log) throws IOException {
+        try (var channel = Files.newByteChannel(log)) {
+            channel.position(Math.max(0, channel.size() - 65536));
+            java.nio.ByteBuffer buffer = java.nio.ByteBuffer.allocate(65536);
+            while (buffer.hasRemaining() && channel.read(buffer) > 0) { /* bounded log tail */ }
+            return new String(buffer.array(), 0, buffer.position(), StandardCharsets.UTF_8);
+        }
     }
 
     private static void write(Path path, String content) throws IOException {
