@@ -532,19 +532,43 @@ async function loadConversionReport() {
 function resetViewers(sides=['before','after']) {
   sides.forEach(side=>{const slot=$(side+'Slot');slot.innerHTML='<div class="viewer-empty">'+icon(side==='before'?'map':'cube')+'<strong>等待'+(side==='before'?'源地图':'转换结果')+'预览</strong><p>分析时生成源预览，转换后生成结果预览。首次渲染需要下载贴图。</p></div>';$(side==='before'?'openBefore':'openAfter').hidden=true;});
 }
-// The query string is what tells the frame whether it is already showing the right thing. Including the
-// result revision means a conversion that changed the world reloads the frame even though the viewer process
-// was reused - otherwise the page would keep displaying the previous tiles until the user asked for it.
+// A frame is identified by the viewer process behind it, not by how fresh its content is. Fresh content
+// is delivered by asking the frame to re-fetch the tiles it is showing - see refreshResultTilesInPlace -
+// which updates the picture without reloading anything.
 function mountSide(side,port,generation=0,revision=0) {
   port=Number(port);if(!Number.isInteger(port)||port<1||port>65535)return;
-  // Only the content revision decides whether what is on screen is stale. Remounting on the generation alone
-  // would reload a viewer that is already correct.
   const hostname=location.hostname==='127.0.0.1'?'127.0.0.1':'localhost';
-  const url='http://'+hostname+':'+port+'/?preview='+encodeURIComponent(generation)+'&rev='+encodeURIComponent(revision);
-  const slot=$(side+'Slot'),current=slot.querySelector('iframe');if(current?.getAttribute('src')===url)return;
-  if(side==='after'&&current&&revision&&current.getAttribute('data-rev')===String(revision))return;
-  const frame=document.createElement('iframe');frame.src=url;frame.dataset.rev=String(revision);frame.title=side==='before'?'源地图 BlueMap 3D 预览':'1.12.2 转换结果 BlueMap 3D 预览';slot.replaceChildren(frame);
+  const url='http://'+hostname+':'+port+'/?preview='+encodeURIComponent(generation);
+  const slot=$(side+'Slot'),current=slot.querySelector('iframe');
+  if(current&&current.dataset.port===String(port)&&current.dataset.generation===String(generation))return;
+  const frame=document.createElement('iframe');frame.src=url;
+  frame.dataset.port=String(port);frame.dataset.generation=String(generation);frame.dataset.rev=String(revision);
+  frame.title=side==='before'?'源地图 BlueMap 3D 预览':'1.12.2 转换结果 BlueMap 3D 预览';slot.replaceChildren(frame);
   const link=$(side==='before'?'openBefore':'openAfter');link.href=url;link.hidden=false;
+}
+// Ask the viewer behind a frame to re-fetch the tiles it is showing, so a rewritten map appears where the
+// user is already looking instead of reloading the frame. The frame is on its own port, so this has to be
+// a cross-origin message rather than a call; the viewer answers when it has finished.
+const TILE_REFRESH_REQUEST='vantaloom:refresh-tiles',TILE_REFRESH_DONE='vantaloom:tiles-refreshed';
+let tileRefreshWaiters=[];
+window.addEventListener('message',e=>{
+  const data=e.data;if(!data||data.type!==TILE_REFRESH_DONE)return;
+  const waiter=tileRefreshWaiters.find(w=>w.frame===e.source&&w.revision===data.revision);
+  if(!waiter)return;
+  tileRefreshWaiters=tileRefreshWaiters.filter(w=>w!==waiter);clearTimeout(waiter.timer);waiter.resolve(data.count);
+});
+// A viewer that is not running the installed script ignores this and never answers, which is why the
+// promise gives up on its own: the poll then simply asks again, and nothing is left waiting forever.
+function refreshTilesInPlace(side,revision){
+  const frame=$(side+'Slot').querySelector('iframe');
+  if(!frame||!frame.contentWindow)return Promise.resolve(-1);
+  return new Promise(resolve=>{
+    const waiter={frame:frame.contentWindow,revision:revision,resolve,timer:null};
+    waiter.timer=setTimeout(()=>{tileRefreshWaiters=tileRefreshWaiters.filter(w=>w!==waiter);resolve(-1);},15000);
+    tileRefreshWaiters.push(waiter);
+    try{frame.contentWindow.postMessage({type:TILE_REFRESH_REQUEST,reason:'converted',revision:revision},'*');}
+    catch(e){clearTimeout(waiter.timer);tileRefreshWaiters=tileRefreshWaiters.filter(w=>w!==waiter);resolve(-1);}
+  });
 }
 async function startRender(manual=false) {
   if(manual&&(state.busy||!state.resultReport))return;
@@ -565,14 +589,17 @@ async function poll() {
     else if(data.status==='failed'){status('转换失败',data.message||'请查看本地程序日志。','bad');state.startedAt=0;busy('');stopPolling();return;}
     else if(data.status==='done') {
       await loadConversionReport();
-      // A reused viewer keeps serving the tiles it already rendered, so the frame is reloaded once the world has
-      // been rewritten. Reloading before the watcher has caught up would just show the old tiles again.
-      if(data.afterPort && data.resultRevision && data.resultRevision!==state.mountedResultRevision){
-        state.mountedResultRevision=data.resultRevision;
-        resetViewers(['after']);
-      }
+      // A reused viewer keeps serving the tiles it already rendered. Instead of reloading the frame - which
+      // would throw away the camera position and flash the whole view - the viewer is asked to re-fetch the
+      // tiles it is holding, so the update lands where the user is already looking.
       if(data.afterPort)mountSide('after',data.afterPort,data.resultPreviewGeneration,data.resultRevision);
-      if(data.resultRevision){state.mountedResultRevision=data.resultRevision;}
+      if(data.resultRevision&&data.resultRevision!==state.mountedResultRevision){
+        state.mountedResultRevision=data.resultRevision;
+        const replaced=await refreshTilesInPlace('after',data.resultRevision);
+        // A viewer that never answered is one that is not running the installed script. Falling back to
+        // reloading keeps the preview correct either way, just less smoothly.
+        if(replaced<0)resetViewers(['after']);
+      }
       if(data.renderStatus==='rendering'){
         busy('render');if(data.renderElapsedSeconds)state.startedAt=Date.now()-data.renderElapsedSeconds*1000;
         status('正在生成预览',data.renderMessage||'正在渲染地图。','neutral',true);
