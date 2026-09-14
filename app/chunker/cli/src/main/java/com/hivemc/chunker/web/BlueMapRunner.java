@@ -1,5 +1,7 @@
 package com.hivemc.chunker.web;
 
+import com.hivemc.chunker.conversion.encoding.java.JavaDataVersion;
+
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -17,6 +19,15 @@ import java.nio.file.Path;
 public class BlueMapRunner {
     public static final int SOURCE_PORT = 8101;
     public static final int RESULT_PORT = 8102;
+
+    /**
+     * The version the modern build was known to work with. Used when the world's own version cannot be read, and as
+     * the retry when BlueMap cannot fetch resources for the newer one.
+     */
+    private static final String VERSION_FALLBACK = "1.21";
+
+    /** Records which Minecraft version a work folder was rendered for, so its viewer can be told the same one. */
+    private static final String VERSION_FILE = "mc-version.txt";
 
     private final Path installationDirectory;
     private final Path javaExecutable;
@@ -46,11 +57,28 @@ public class BlueMapRunner {
      */
     public Path render(boolean modern, Path worldFolder, Path workFolder, int port)
             throws IOException, InterruptedException {
+        String version = minecraftVersion(modern, worldFolder);
+        try {
+            return renderWith(modern, version, worldFolder, workFolder, port);
+        } catch (IOException failure) {
+            // The version read from the world may be newer than this BlueMap build knows about, in which case it
+            // cannot fetch matching resources. Retrying with the version this build was known to work with is
+            // better than refusing to show the user anything.
+            if (!modern || version.equals(VERSION_FALLBACK)) throw failure;
+            return renderWith(modern, VERSION_FALLBACK, worldFolder, workFolder, port);
+        }
+    }
+
+    private Path renderWith(boolean modern, String version, Path worldFolder, Path workFolder, int port)
+            throws IOException, InterruptedException {
         Path webRoot = workFolder.resolve("web");
         Files.createDirectories(workFolder);
         Files.createDirectories(webRoot);
 
         writeConfig(modern, workFolder, worldFolder, webRoot, port);
+        // Remember which version this work folder was rendered for: the viewer starts later and has to be told the
+        // same one, or it loads different resources than the render used.
+        Files.writeString(workFolder.resolve(VERSION_FILE), version, StandardCharsets.UTF_8);
 
         String jarName = modern ? "BlueMap-5.16-cli.jar" : "BlueMap-1.5.5-cli.jar";
         File jar = installationDirectory.resolve(jarName).toFile();
@@ -66,7 +94,7 @@ public class BlueMapRunner {
                 "-c",
                 workFolder.toString(),
                 "-v",
-                minecraftVersion(modern),
+                version,
                 "-r"
         );
         builder.directory(workFolder.toFile());
@@ -116,7 +144,7 @@ public class BlueMapRunner {
                 "-c",
                 workFolder.toString(),
                 "-v",
-                minecraftVersion(modern),
+                versionOf(workFolder),
                 "-r",
                 "-u",
                 "-w"
@@ -153,6 +181,8 @@ public class BlueMapRunner {
                 jar.getAbsolutePath(),
                 "-c",
                 workFolder.toString(),
+                "-v",
+                versionOf(workFolder),
                 "-w"
         );
         builder.directory(workFolder.toFile());
@@ -221,12 +251,48 @@ public class BlueMapRunner {
      * 1.12.2-capable build means 1.17. It would then load 1.17 block models and textures and try to render a
      * 1.12.2 world with them, which produces an empty map rather than an error - the viewer opens, shows a blank
      * scene, and gives no hint as to why.
+     * <p>
+     * For the source side the version is read from the world itself rather than assumed. A world from 1.21.11 holds
+     * blocks that did not exist in 1.21, and rendering it with 1.21 resources leaves exactly those blocks blank.
+     * BlueMap fetches the matching client jar by version, so naming the world's real version gets its real textures.
      *
-     * @param modern whether this is the modern build rendering the source world.
+     * @param modern      whether this is the modern build rendering the source world.
+     * @param worldFolder the world being rendered, or null when only the version is needed for a viewer.
      * @return the version string to pass on the command line.
      */
-    private static String minecraftVersion(boolean modern) {
-        return modern ? "1.21" : "1.12.2";
+    private static String minecraftVersion(boolean modern, Path worldFolder) {
+        if (!modern) return "1.12.2";
+        if (worldFolder != null) {
+            try {
+                var detected = JavaDataVersion.detect(worldFolder.toFile());
+                if (detected.isPresent()) {
+                    String version = detected.get().getVersion().toString();
+                    if (!version.isEmpty()) return version;
+                }
+            } catch (RuntimeException ignored) {
+                // An unreadable level.dat is not fatal: fall back to the version known to work.
+            }
+        }
+        return VERSION_FALLBACK;
+    }
+
+    /**
+     * The version a work folder was rendered for, so a viewer serving it uses the same resources.
+     *
+     * @param workFolder the folder the render wrote to.
+     * @return the recorded version, or the fallback when there is no record.
+     */
+    private static String versionOf(Path workFolder) {
+        try {
+            Path file = workFolder.resolve(VERSION_FILE);
+            if (Files.isRegularFile(file)) {
+                String version = Files.readString(file, StandardCharsets.UTF_8).trim();
+                if (!version.isEmpty()) return version;
+            }
+        } catch (IOException ignored) {
+            // Fall through to the fallback.
+        }
+        return VERSION_FALLBACK;
     }
 
     /** Wait for this specific process; a dead child or a timeout must not be published as a ready iframe. */

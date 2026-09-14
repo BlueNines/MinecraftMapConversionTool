@@ -172,7 +172,7 @@ public final class BlockIcons {
      */
     private static final String[] SHAPE_SUFFIXES = {
             "_stairs", "_slab", "_wall", "_fence_gate", "_fence", "_trapdoor", "_door",
-            "_button", "_pressure_plate"
+            "_button", "_pressure_plate", "_pane", "_bars"
     };
 
     private Path clientJar;
@@ -262,8 +262,28 @@ public final class BlockIcons {
         return png;
     }
 
+    /** Shapes the tool knows how to draw. A cube is the fallback, not the default answer. */
+    private enum Shape { CUBE, SLAB, STAIRS, FENCE, WALL, PANE, TRAPDOOR, DOOR, FLAT, RAIL, BUTTON, POST, LIQUID, CROSS }
+
+    /**
+     * Blocks drawn as two intersecting planes. Standing a flower up as a cube is the one thing a plant icon must not
+     * do: the shape is most of what the user is comparing.
+     */
+    private static final Set<String> CROSS_BLOCKS = Set.of(
+            "dandelion", "poppy", "blue_orchid", "allium", "azure_bluet", "red_tulip", "orange_tulip",
+            "white_tulip", "pink_tulip", "oxeye_daisy", "cornflower", "lily_of_the_valley", "wither_rose",
+            "sunflower", "lilac", "rose_bush", "peony", "short_grass", "tall_grass", "fern", "large_fern",
+            "dead_bush", "sugar_cane", "vine", "wheat", "carrots", "potatoes", "beetroots",
+            "sweet_berry_bush", "torchflower", "pitcher_plant", "nether_sprouts", "warped_roots",
+            "crimson_roots", "kelp", "seagrass", "bamboo", "cocoa", "red_mushroom", "brown_mushroom",
+            "crimson_fungus", "warped_fungus", "glow_lichen", "big_dripleaf"
+    );
+
     /**
      * Render the icon for a resolved block name.
+     * <p>
+     * The shape matters as much as the texture: a staircase drawn as a cube, or a flower drawn as a cube, tells the
+     * user nothing about whether a substitution is acceptable.
      *
      * @param name the normalised block name.
      * @return PNG bytes, or null if no texture could be found.
@@ -285,85 +305,215 @@ public final class BlockIcons {
         if (top == null) top = side;
 
         String entry = texturePaths.get(sideName);
-        return encode(entry != null && (entry.contains("/item/") || entry.contains("/items/")) ? side : compose(top, side));
+        boolean itemSprite = entry != null && (entry.contains("/item/") || entry.contains("/items/"));
+
+        // The shape carries as much as the texture does. "birch_fence becomes fence" says nothing about whether the
+        // fence still reads as a fence if both sides are drawn as solid cubes, and a staircase is not a cube either.
+        Shape shape = shape(name);
+        if (itemSprite) return encode(shape == Shape.CROSS ? cross(side) : fit(side));
+        return encode(switch (shape) {
+            case CROSS -> cross(side);
+            case SLAB -> box(top, side, 0, 0, 0, 1, 0.5, 1);
+            case STAIRS -> stairs(top, side);
+            case FENCE -> fence(top, side);
+            case WALL -> wall(top, side);
+            case PANE -> pane(top, side);
+            case TRAPDOOR -> box(top, side, 0, 0, 0, 1, 0.1875, 1);
+            case DOOR -> box(top, side, 0, 0, 0.4375, 1, 1, 0.5625);
+            case FLAT -> box(top, side, 0, 0, 0, 1, 0.0625, 1);
+            case RAIL -> box(top, side, 0.0625, 0, 0, 0.9375, 0.0625, 1);
+            case BUTTON -> box(top, side, 0.3125, 0.375, 0.375, 0.6875, 0.625, 0.625);
+            case POST -> box(top, side, 0.4375, 0, 0.4375, 0.5625, 0.6875, 0.5625);
+            case LIQUID -> box(top, side, 0, 0, 0, 1, 0.875, 1);
+            default -> box(top, side, 0, 0, 0, 1, 1, 1);
+        });
     }
 
     /**
-     * Draw a cube using the given textures: the top face uses one image, the two side faces the other.
+     * Work out how a block should be drawn.
      * <p>
-     * The projection places the top face as a diamond and the sides as parallelograms, and shades each face
-     * differently - the same trick the game itself uses to make a flat texture read as a solid block.
+     * The name is checked first, then its modern equivalent, because the 1.12.2 names on the target side of a mapping
+     * are the ones that still need interpreting: "grass" means the full cube, while "tallgrass" means the plant.
      *
-     * @param top  the texture for the top face.
-     * @param side the texture for the two side faces.
-     * @return the rendered icon.
+     * @param name the normalised block name.
+     * @return the shape to draw.
      */
-    private static BufferedImage compose(BufferedImage top, BufferedImage side) {
-        BufferedImage icon = new BufferedImage(ICON_SIZE, ICON_SIZE, BufferedImage.TYPE_INT_ARGB);
+    private static Shape shape(String name) {
+        Shape direct = shapeOf(name);
+        if (direct != Shape.CUBE) return direct;
+        String resolved = LEGACY_NAMES.get(name);
+        return resolved == null ? Shape.CUBE : shapeOf(resolved);
+    }
+
+    private static Shape shapeOf(String name) {
+        if (CROSS_BLOCKS.contains(name) || name.endsWith("_sapling") || name.endsWith("_flower")
+                || name.endsWith("_roots") || name.endsWith("_sprouts") || name.endsWith("_fungus")) {
+            return Shape.CROSS;
+        }
+        if (name.equals("iron_bars") || name.endsWith("_pane")) return Shape.PANE;
+        if (name.endsWith("_stairs")) return Shape.STAIRS;
+        if (name.endsWith("_slab")) return Shape.SLAB;
+        if (name.endsWith("_trapdoor")) return Shape.TRAPDOOR;
+        if (name.endsWith("_door")) return Shape.DOOR;
+        if (name.endsWith("_fence_gate") || name.endsWith("_fence")) return Shape.FENCE;
+        if (name.endsWith("_wall")) return Shape.WALL;
+        if (name.endsWith("_button")) return Shape.BUTTON;
+        if (name.endsWith("_pressure_plate") || name.endsWith("_carpet") || name.equals("lily_pad")
+                || name.equals("snow") || name.equals("moss_carpet") || name.equals("dirt_path")) {
+            return Shape.FLAT;
+        }
+        if (name.equals("rail") || name.endsWith("_rail")) return Shape.RAIL;
+        if (name.equals("torch") || name.equals("chain") || name.equals("lantern") || name.equals("soul_lantern")
+                || name.equals("end_rod") || name.equals("lightning_rod") || name.equals("lever")
+                || name.endsWith("_torch") || name.endsWith("_candle")) {
+            return Shape.POST;
+        }
+        if (name.startsWith("water") || name.startsWith("lava")) return Shape.LIQUID;
+        return Shape.CUBE;
+    }
+
+    /**
+     * Draw a block from its bounding box in block space, where each axis runs from 0 to 1.
+     */
+    private static BufferedImage box(BufferedImage top, BufferedImage side,
+                                     double x0, double y0, double z0, double x1, double y1, double z1) {
+        BufferedImage icon = newIcon();
         Graphics2D g = icon.createGraphics();
         g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
-
-        double s = ICON_SIZE / 32.0;
-        double half = ICON_SIZE / 2.0;
-        double quarter = ICON_SIZE / 4.0;
-
-        AffineTransform original = g.getTransform();
-
-        // Top face: texture u goes right-down, v goes left-down.
-        AffineTransform topTransform = new AffineTransform(s, s * 0.5, -s, s * 0.5, half, 0);
-        drawFace(g, top, topTransform, new int[]{
-                (int) half, ICON_SIZE, (int) half, 0
-        }, new int[]{
-                0, (int) quarter, (int) half, (int) quarter
-        }, 0f);
-        g.setTransform(original);
-
-        // Left face: texture u goes right-down, v goes straight down.
-        AffineTransform leftTransform = new AffineTransform(s, s * 0.5, 0, s, 0, quarter);
-        drawFace(g, side, leftTransform, new int[]{
-                0, (int) half, (int) half, 0
-        }, new int[]{
-                (int) quarter, (int) half, ICON_SIZE, (int) (quarter * 3)
-        }, 0.20f);
-        g.setTransform(original);
-
-        // Right face: the mirror of the left one.
-        AffineTransform rightTransform = new AffineTransform(s, -s * 0.5, 0, s, half, half);
-        drawFace(g, side, rightTransform, new int[]{
-                (int) half, ICON_SIZE, ICON_SIZE, (int) half
-        }, new int[]{
-                (int) half, (int) quarter, (int) (quarter * 3), ICON_SIZE
-        }, 0.38f);
-        g.setTransform(original);
-
+        drawBox(g, top, side, x0, y0, z0, x1, y1, z1, 0f);
         g.dispose();
         return icon;
     }
 
     /**
-     * Draw one face of the cube.
-     *
-     * @param g         the graphics context.
-     * @param texture   the texture to map onto the face.
-     * @param transform the texture-to-icon transform for this face.
-     * @param xs        the face's x co-ordinates.
-     * @param ys        the face's y co-ordinates.
-     * @param shade     how much to darken this face, 0 being flat lit.
+     * A staircase: a half-height box with a second half-height box on top of one half of its footprint.
      */
-    private static void drawFace(Graphics2D g, BufferedImage texture, AffineTransform transform,
-                                 int[] xs, int[] ys, float shade) {
-        Polygon face = new Polygon(xs, ys, xs.length);
+    private static BufferedImage stairs(BufferedImage top, BufferedImage side) {
+        BufferedImage icon = newIcon();
+        Graphics2D g = icon.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
+        drawBox(g, top, side, 0, 0, 0, 1, 0.5, 1, 0f);
+        drawBox(g, top, side, 0, 0.5, 0, 0.5, 1, 1, 0f);
+        g.dispose();
+        return icon;
+    }
+
+    /** Two rails per axis, plus the post, which is drawn last so it reads as being in front. */
+    private static BufferedImage fence(BufferedImage top, BufferedImage side) {
+        BufferedImage icon = newIcon();
+        Graphics2D g = icon.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
+        drawBox(g, top, side, 0, 0.25, 0.4375, 1, 0.375, 0.5625, 0.06f);
+        drawBox(g, top, side, 0, 0.6875, 0.4375, 1, 0.8125, 0.5625, 0.06f);
+        drawBox(g, top, side, 0.4375, 0.25, 0, 0.5625, 0.375, 1, 0.06f);
+        drawBox(g, top, side, 0.4375, 0.6875, 0, 0.5625, 0.8125, 1, 0.06f);
+        drawBox(g, top, side, 0.375, 0, 0.375, 0.625, 1, 0.625, 0f);
+        g.dispose();
+        return icon;
+    }
+
+    /** A wall is a fence with a thicker post and a single wide rail. */
+    private static BufferedImage wall(BufferedImage top, BufferedImage side) {
+        BufferedImage icon = newIcon();
+        Graphics2D g = icon.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
+        drawBox(g, top, side, 0, 0.5, 0.375, 1, 0.75, 0.625, 0.06f);
+        drawBox(g, top, side, 0.25, 0, 0.25, 0.75, 1, 0.75, 0f);
+        g.dispose();
+        return icon;
+    }
+
+    /** A pane or a set of bars: two thin sheets crossing the block, both faces visible through the gaps. */
+    private static BufferedImage pane(BufferedImage top, BufferedImage side) {
+        BufferedImage icon = newIcon();
+        Graphics2D g = icon.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
+        drawBox(g, top, side, 0, 0, 0.4375, 1, 1, 0.5625, 0f);
+        drawBox(g, top, side, 0.4375, 0, 0, 0.5625, 1, 1, 0f);
+        g.dispose();
+        return icon;
+    }
+
+    /**
+     * A plant: two planes crossing in the middle, the way the game draws flowers and crops.
+     */
+    private static BufferedImage cross(BufferedImage texture) {
+        BufferedImage icon = newIcon();
+        Graphics2D g = icon.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
+        face(g, texture, at(0, 1, 0.5), at(1, 1, 0.5), at(1, 0, 0.5), at(0, 0, 0.5), 0f);
+        face(g, texture, at(0.5, 1, 1), at(0.5, 1, 0), at(0.5, 0, 0), at(0.5, 0, 1), 0.08f);
+        g.dispose();
+        return icon;
+    }
+
+    private static BufferedImage newIcon() {
+        return new BufferedImage(ICON_SIZE, ICON_SIZE, BufferedImage.TYPE_INT_ARGB);
+    }
+
+    /** Blow a 16 by 16 texture, or an item sprite, up to the icon size without smoothing the pixels. */
+    private static BufferedImage fit(BufferedImage source) {
+        BufferedImage icon = newIcon();
+        Graphics2D g = icon.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
+        g.drawImage(source, 0, 0, ICON_SIZE, ICON_SIZE, null);
+        g.dispose();
+        return icon;
+    }
+
+    /**
+     * Project a point from block space into icon pixels.
+     * <p>
+     * The usual isometric arrangement: x runs to the right and down, z to the left and down, y straight up.
+     *
+     * @param x the position along x, 0 to 1.
+     * @param y the position along y, 0 at the bottom of the block.
+     * @param z the position along z, 0 to 1.
+     * @return the x and y pixel co-ordinates.
+     */
+    private static double[] at(double x, double y, double z) {
+        double half = ICON_SIZE / 2.0;
+        double quarter = ICON_SIZE / 4.0;
+        return new double[]{half + (x - z) * half, (x + z) * quarter + (1 - y) * half};
+    }
+
+    /**
+     * Draw a box into an existing icon.
+     *
+     * @param extra an extra darkening applied to every face, used to push thin parts into the background.
+     */
+    private static void drawBox(Graphics2D g, BufferedImage top, BufferedImage side,
+                                double x0, double y0, double z0, double x1, double y1, double z1, float extra) {
+        // Top face, then the two faces turned towards the viewer. The shading is what makes a flat texture read as a
+        // solid, and it is the same trick the game itself uses.
+        face(g, top, at(x0, y1, z0), at(x1, y1, z0), at(x1, y1, z1), at(x0, y1, z1), extra);
+        face(g, side, at(x1, y1, z0), at(x1, y1, z1), at(x1, y0, z1), at(x1, y0, z0), 0.38f + extra);
+        face(g, side, at(x0, y1, z1), at(x1, y1, z1), at(x1, y0, z1), at(x0, y0, z1), 0.20f + extra);
+    }
+
+    /**
+     * Draw one four-sided face, mapping the texture across it. The corners run round the face in order, starting
+     * at the texture's top-left.
+     */
+    private static void face(Graphics2D g, BufferedImage texture, double[] p0, double[] p1, double[] p2, double[] p3,
+                             float shade) {
+        Polygon outline = new Polygon(
+                new int[]{(int) Math.round(p0[0]), (int) Math.round(p1[0]), (int) Math.round(p2[0]), (int) Math.round(p3[0])},
+                new int[]{(int) Math.round(p0[1]), (int) Math.round(p1[1]), (int) Math.round(p2[1]), (int) Math.round(p3[1])}, 4);
 
         // Clipping keeps the textured parallelogram inside its own face: without it the corners overlap the
-        // neighbouring faces by a pixel and the cube gets faint diagonal seams.
+        // neighbouring faces by a pixel and the shape gets faint diagonal seams.
         java.awt.Shape previousClip = g.getClip();
-        g.setClip(face);
-        g.setTransform(transform);
+        g.setClip(outline);
+        g.setTransform(new AffineTransform(
+                (p1[0] - p0[0]) / TEXTURE_SIZE, (p1[1] - p0[1]) / TEXTURE_SIZE,
+                (p3[0] - p0[0]) / TEXTURE_SIZE, (p3[1] - p0[1]) / TEXTURE_SIZE,
+                p0[0], p0[1]));
         g.drawImage(texture, 0, 0, null);
         g.setTransform(new AffineTransform());
         if (shade > 0) {
-            g.setColor(new Color(0f, 0f, 0f, shade));
-            g.fillPolygon(face);
+            g.setColor(new Color(0f, 0f, 0f, Math.min(0.85f, shade)));
+            g.fillPolygon(outline);
         }
         g.setClip(previousClip);
     }
@@ -505,7 +655,7 @@ public final class BlockIcons {
 
         byte[] png = null;
         try {
-            png = encode(compose(flat, flat));
+            png = encode(box(flat, flat, 0, 0, 0, 1, 1, 1));
         } catch (IOException ignored) {
             // Encoding a 48 by 48 image cannot realistically fail.
         }
