@@ -11,6 +11,7 @@ import com.hivemc.chunker.conversion.encoding.base.Version;
 import com.hivemc.chunker.conversion.encoding.base.reader.LevelReader;
 import com.hivemc.chunker.conversion.encoding.base.writer.LevelWriter;
 import com.hivemc.chunker.conversion.intermediate.column.chunk.identifier.ChunkerBlockIdentifier;
+import com.hivemc.chunker.conversion.intermediate.column.chunk.identifier.type.block.ChunkerCustomBlockType;
 
 import java.io.File;
 import java.io.IOException;
@@ -87,6 +88,7 @@ public final class ConversionReport {
         JsonObject changed = new JsonObject();
         changed.addProperty("chunksWritten", IncrementalWriter.getWritten());
         changed.addProperty("chunksUnchanged", IncrementalWriter.getUnchanged());
+        changed.addProperty("emptyChunksSkipped", IncrementalWriter.getEmptySkipped());
         return changed;
     }
 
@@ -181,12 +183,14 @@ public final class ConversionReport {
             blocks.addProperty("totalBlocks", 0);
             blocks.addProperty("distinctTypes", 0);
             blocks.add("byType", new JsonArray());
+            blocks.add("byIdentifier", new JsonArray());
             return blocks;
         }
 
         Map<ChunkerBlockIdentifier, Long> counts = survey.getBlockCounts();
         blocks.addProperty("totalBlocks", survey.getTotalBlocks());
         blocks.addProperty("distinctTypes", counts.size());
+        blocks.add("byIdentifier", sourceBlockTypes(counts));
 
         JsonArray byType = new JsonArray();
         long limit = 400;
@@ -202,6 +206,28 @@ public final class ConversionReport {
         blocks.add("byType", byType);
         blocks.addProperty("byTypeTruncated", counts.size() > limit);
         return blocks;
+    }
+
+    /** 完整源方块列表：合并状态、保留命名空间，不使用展示报告的 400 条截断。 */
+    static JsonArray sourceBlockTypes(Map<ChunkerBlockIdentifier, Long> counts) {
+        Map<String, Long> totals = new java.util.HashMap<>();
+        for (var entry : counts.entrySet()) {
+            if (entry.getValue() <= 0) continue;
+            var type = entry.getKey().getType();
+            String name = type instanceof ChunkerCustomBlockType custom ? custom.getIdentifier()
+                    : "minecraft:" + type.toString().toLowerCase(java.util.Locale.ROOT);
+            totals.merge(name, entry.getValue(), Long::sum);
+        }
+        JsonArray result = new JsonArray();
+        totals.entrySet().stream()
+                .sorted(Map.Entry.<String, Long>comparingByValue().reversed().thenComparing(Map.Entry.comparingByKey()))
+                .forEach(entry -> {
+                    JsonObject block = new JsonObject();
+                    block.addProperty("block", entry.getKey());
+                    block.addProperty("count", entry.getValue());
+                    result.add(block);
+                });
+        return result;
     }
 
     private static JsonObject buildUnmapped(WorldConverter converter) {

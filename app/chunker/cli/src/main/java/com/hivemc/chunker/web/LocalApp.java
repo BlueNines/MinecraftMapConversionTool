@@ -49,6 +49,7 @@ public class LocalApp {
     private final AtomicReference<Path> lastResultWorld = new AtomicReference<>();
     private final AtomicReference<Path> lastSourceWorld = new AtomicReference<>();
     private final PreviewManager previews;
+    private final PreparedWorlds preparedWorlds;
     private final java.util.concurrent.atomic.AtomicBoolean scanning = new java.util.concurrent.atomic.AtomicBoolean();
     private volatile Path iconWorld;
 
@@ -73,8 +74,9 @@ public class LocalApp {
         this.toolDirectory = toolDirectory.toAbsolutePath().normalize();
         this.blueMap = runner;
         this.blockIcons = icons;
+        this.preparedWorlds = new PreparedWorlds(this.toolDirectory.resolve("sources"));
         this.previews = new PreviewManager(this.toolDirectory.resolve("viewers"), blueMap,
-                () -> blockIcons.refresh(iconWorld, this.toolDirectory.resolve("viewers")));
+                () -> blockIcons.refresh(iconWorld, this.toolDirectory.resolve("viewers")), preparedWorlds);
     }
 
     /**
@@ -489,7 +491,6 @@ public class LocalApp {
         }
 
         // Reuse the independently started source; only invalidate a result belonging to a different project.
-        previews.prepareConversion(input, output);
         iconWorld = input;
         blockIcons.refresh(input, toolDirectory.resolve("viewers"));
         lastSourceWorld.set(input);
@@ -504,12 +505,11 @@ public class LocalApp {
         boolean approximate = !request.has("approximate") || request.get("approximate").getAsBoolean();
 
         ConversionJob newJob = new ConversionJob(input, output, output, shiftToFit, clearContainers, mappings, approximate);
+        newJob.prepareWith(preparedWorlds);
+        previews.prepareConversion(input, output);
         job.set(newJob);
 
-        // Start the result preview as soon as the conversion finishes, without the user having to ask.
-        // The viewer is not re-rendered: PreviewManager reuses the running watcher for the same source and
-        // output, and that watcher is what notices the rewritten chunks and updates just those tiles. Asking
-        // them to press "re-render preview" afterwards was the extra step; the work was already being done.
+        // 输出完全写入后才开始一次增量渲染；保留 HTTP 服务，不让后台 watcher 边写边读。
         // Snapshots for the worker: the locals above are reassigned earlier in this method, so they are not
         // effectively final and cannot be captured by a lambda.
         Path resultWorld = output;
@@ -518,14 +518,15 @@ public class LocalApp {
             newJob.run();
             if (newJob.isFinished() && !newJob.isFailed()) {
                 try {
-                    // Mark the result as out of date first: the viewer is reused rather than restarted, so the
-                    // page needs something to notice. Then let the preview layer reuse or start the watcher.
-                    previews.converted();
+                    // PreviewManager 在渲染成功后才发布新版本，前端随后等待全部可见瓦片加载完成。
                     previews.result(sourceWorld, resultWorld, false);
                 } catch (RuntimeException ignored) {
                     // A preview that could not be started must not affect the conversion, which has already
                     // succeeded and been written to disk. The user can still start it by hand.
+                    previews.conversionFailed();
                 }
+            } else {
+                previews.conversionFailed();
             }
         }, "conversion");
         worker.setDaemon(true);
@@ -663,6 +664,7 @@ public class LocalApp {
         response.addProperty("sourcePreviewGeneration", source.generation());
         response.addProperty("sourceRenderElapsedSeconds", source.elapsedSeconds());
         response.addProperty("beforePort", source.port());
+        response.addProperty("sourceCamera", previews.sourceCamera());
         response.addProperty("resultWorld", result.world());
         response.addProperty("renderStatus", result.status());
         response.addProperty("renderMessage", result.message());
@@ -787,6 +789,7 @@ public class LocalApp {
             Files.createDirectories(scratch);
 
             ConversionJob analysis = new ConversionJob(input, scratch, scratch, true, true, mappings, approximate);
+            analysis.prepareWith(preparedWorlds);
             analysis.run();
             if (analysis.isFailed()) {
                 response.addProperty("ok", false);
@@ -799,6 +802,7 @@ public class LocalApp {
             lastScan.set(report);
             response.addProperty("ok", true);
             response.add("report", report == null ? new JsonObject() : JsonParser.parseString(report));
+            addPreviewStatus(response);
             removeTree(scratch);
         } catch (Exception e) {
             response.addProperty("ok", false);

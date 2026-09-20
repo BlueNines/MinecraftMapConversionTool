@@ -28,7 +28,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * carried between runs, and it stays correct even if the output folder was written by a different process or left
  * over from an earlier session.
  */
-public class IncrementalWriter {
+public class IncrementalWriter implements AutoCloseable {
     /**
      * Totals across every writer in the process.
      * <p>
@@ -38,6 +38,7 @@ public class IncrementalWriter {
      */
     private static final java.util.concurrent.atomic.AtomicLong CHANGED = new java.util.concurrent.atomic.AtomicLong();
     private static final java.util.concurrent.atomic.AtomicLong UNCHANGED_COUNT = new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong EMPTY_SKIPPED = new java.util.concurrent.atomic.AtomicLong();
 
     private final Map<File, CompressedChunkLookup> lookups = new ConcurrentHashMap<>();
     private final int timestampSeconds;
@@ -48,6 +49,27 @@ public class IncrementalWriter {
     public static void resetCounters() {
         CHANGED.set(0);
         UNCHANGED_COUNT.set(0);
+        EMPTY_SKIPPED.set(0);
+    }
+
+    /** 报告首次输出省略的全空气区块柱。 */
+    public static long getEmptySkipped() { return EMPTY_SKIPPED.get(); }
+
+    /** 仅跳过磁盘上不存在的空柱，保留热更新写空旧建筑的机会。 */
+    public boolean skipNewEmptyColumn(File file, int x, int z) throws IOException {
+        if (file.isFile() && lookups.computeIfAbsent(file, CompressedChunkLookup::new).contains(x, z)) return false;
+        EMPTY_SKIPPED.incrementAndGet();
+        return true;
+    }
+
+    /** 关闭全部比较句柄，使反复分析不依赖 GC 解锁临时输出。 */
+    @Override public void close() throws IOException {
+        IOException failure = null;
+        for (CompressedChunkLookup lookup : lookups.values()) {
+            try { lookup.close(); } catch (IOException e) { failure = e; }
+        }
+        lookups.clear();
+        if (failure != null) throw failure;
     }
 
     /**
@@ -121,6 +143,19 @@ public class IncrementalWriter {
 
         private CompressedChunkLookup(File file) {
             this.file = file;
+        }
+
+        /** 仅读位置表，不为一个空柱分配压缩数据缓冲。 */
+        private synchronized boolean contains(int x, int z) throws IOException {
+            if (!file.isFile() || file.length() < 8192) return false;
+            if (handle == null) handle = new RandomAccessFile(file, "r");
+            handle.seek(((x & 31) + ((z & 31) << 5)) * 4L);
+            return (handle.readInt() >>> 8) != 0;
+        }
+
+        /** 与读取使用同一把锁，正常结束后立即释放句柄。 */
+        private synchronized void close() throws IOException {
+            if (handle != null) { handle.close(); handle = null; }
         }
 
         private synchronized byte[] read(int chunkX, int chunkZ) throws IOException {

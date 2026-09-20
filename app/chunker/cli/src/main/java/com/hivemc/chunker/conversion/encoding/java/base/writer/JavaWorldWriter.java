@@ -78,6 +78,8 @@ public class JavaWorldWriter implements WorldWriter {
                 converter.logNonFatalException(e);
             }
         }
+        incrementalWriter.close();
+        mcaFiles.clear();
     }
 
     /**
@@ -94,6 +96,10 @@ public class JavaWorldWriter implements WorldWriter {
             directory.mkdirs();
         }
         File regionFile = new File(directory, "r." + chunkCoordPair.regionX() + "." + chunkCoordPair.regionZ() + ".mca");
+        if (converter instanceof com.hivemc.chunker.conversion.WorldConverter world
+                && world.shouldSkipNewEmptyColumns()
+                && !com.hivemc.chunker.downgrade.ChunkContent.hasContent(chunkData)
+                && incrementalWriter.skipNewEmptyColumn(regionFile, chunkCoordPair.chunkX(), chunkCoordPair.chunkZ())) return;
         writeMCAData(regionFile, chunkCoordPair, chunkData);
     }
 

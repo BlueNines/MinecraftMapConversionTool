@@ -140,6 +140,13 @@ public class WorldConverter implements Converter {
     private boolean processColumnPreTransform = true;
     private boolean allowNBTCopying = false;
     private boolean discardEmptyChunks = false;
+    private boolean skipNewEmptyColumns;
+
+    /** 建筑导出省略新的全空区块柱，已存在的柱仍写空以清除旧建筑。 */
+    public void setSkipNewEmptyColumns(boolean value) { skipNewEmptyColumns = value; }
+
+    /** 不改变 section 光照写入或上游通用转换的默认行为。 */
+    public boolean shouldSkipNewEmptyColumns() { return skipNewEmptyColumns; }
     private boolean preventYBiomeBlending = false;
     private boolean customIdentifiers = true;
     private boolean exceptions = false;

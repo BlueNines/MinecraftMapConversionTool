@@ -24,20 +24,16 @@ public final class PreviewManager implements AutoCloseable {
     private final Path root;
     private final BlueMapRunner runner;
     private final Runnable texturesChanged;
+    private final PreparedWorlds preparedWorlds;
+    private String sourceCamera = "";
     private final Side before = new Side(true);
     private final Side after = new Side(false);
     private long generation;
     private boolean closed;
 
-    /**
-     * Bumped every time a conversion rewrites the result world.
-     * <p>
-     * Starting the viewer is not the same as showing new content. When the same result is converted again the
-     * viewer is reused rather than restarted - which is the point, since the watcher then re-renders only the
-     * chunks that changed - but the page already open in the browser is still showing the previous tiles. This
-     * counter gives it something to notice, so the update is visible without the user asking for it.
-     */
+    /** 仅在本轮所有瓦片渲染成功后发布版本，转换写盘完成并不代表预览完成。 */
     private long resultRevision;
+    private boolean awaitingResult;
 
     private static final class Side {
         final boolean modern;
@@ -55,20 +51,28 @@ public final class PreviewManager implements AutoCloseable {
 
     private static final class Task {
         final Path source, world, work;
-        final long generation, started = System.currentTimeMillis();
+        final long generation;
+        long started = System.currentTimeMillis(), finished;
         String status = "rendering", message = "准备渲染";
         int port;
         Process server;
         Future<?> future;
+        boolean preparing;
         Task(Path source, Path world, Path work, long generation) {
             this.source = source; this.world = world; this.work = work; this.generation = generation;
         }
     }
 
     public PreviewManager(Path root, BlueMapRunner runner, Runnable texturesChanged) {
+        this(root, runner, texturesChanged, null);
+    }
+
+    /** 两侧生命周期独立，源预览与转换共享同一次内容核查。 */
+    public PreviewManager(Path root, BlueMapRunner runner, Runnable texturesChanged, PreparedWorlds preparedWorlds) {
         this.root = root.toAbsolutePath().normalize();
         this.runner = runner;
         this.texturesChanged = texturesChanged;
+        this.preparedWorlds = preparedWorlds;
     }
 
     /** Start once, reuse an in-flight/live source, retry a failed source on an explicit new request. */
@@ -88,6 +92,7 @@ public final class PreviewManager implements AutoCloseable {
         Task old = after.task;
         if (old != null && (!old.source.equals(source.toAbsolutePath().normalize())
                 || !old.world.equals(output.toAbsolutePath().normalize()) || !reusable(old))) cancel(after);
+        awaitingResult = true;
     }
 
     /** Only a successful conversion may call this. A manual refresh restarts the result, not the source. */
@@ -96,8 +101,17 @@ public final class PreviewManager implements AutoCloseable {
         output = output.toAbsolutePath().normalize();
         source(source);
         Task old = after.task;
-        if (old != null && old.source.equals(source) && old.world.equals(output)
-                && reusable(old) && (!force || old.status.equals("rendering"))) return false;
+        if (old != null && old.source.equals(source) && old.world.equals(output) && reusable(old)) {
+            if (old.status.equals("rendering")) return false;
+            if (!force) {
+                if (!awaitingResult) return false;
+                old.status = "rendering";
+                old.message = "转换已写入，正在增量渲染变更区块";
+                old.started = System.currentTimeMillis(); old.finished = 0;
+                old.future = after.worker.submit(() -> refreshResult(old));
+                return true;
+            }
+        }
         start(after, source, output);
         return true;
     }
@@ -110,7 +124,8 @@ public final class PreviewManager implements AutoCloseable {
     private void start(Side side, Path source, Path world) {
         cancel(side);
         String key = digest(source + "\n" + world);
-        Task task = new Task(source, world, root.resolve((side.modern ? "source-" : "result-") + key), ++generation);
+        // 新结果缓存单独命名，旧版全世界瓦片不能混入稀疏预览。
+        Task task = new Task(source, world, root.resolve((side.modern ? "source-" : "result-sparse-") + key), ++generation);
         side.task = task;
         task.future = side.worker.submit(() -> render(side, task));
     }
@@ -126,13 +141,26 @@ public final class PreviewManager implements AutoCloseable {
             int port = reservation.getLocalPort();
             synchronized (this) {
                 if (!current(side, task)) return;
-                task.message = side.modern ? "正在渲染源地图（与分析并行）" : "正在渲染 1.12.2 转换结果";
+                task.message = side.modern ? "正在核查内容区块（与分析共用）" : "正在渲染 1.12.2 转换结果";
             }
-            runner.render(side.modern, task.world, task.work, port);
+            Path renderWorld = task.world;
+            if (side.modern && preparedWorlds != null) {
+                var prepared = preparedWorlds.prepare(task.world);
+                renderWorld = prepared.directory();
+                synchronized (this) {
+                    if (!current(side, task)) return;
+                    sourceCamera = prepared.summary().camera();
+                    task.message = "保留 " + prepared.summary().contentChunks() + " 个内容区块，跳过 " + prepared.summary().skippedChunks() + " 个空白区块，正在渲染";
+                }
+            }
+            if (!side.modern) renderWorld = prepareResult(task);
+            if (!current(side, task)) return;
+            runner.render(side.modern, renderWorld, task.work, port);
             if (!current(side, task)) return;
             try { texturesChanged.run(); } catch (RuntimeException ignored) { /* icon discovery is non-fatal */ }
             reservation.close();
-            server = side.modern ? runner.startWebServer(true, task.work) : runner.startWatcher(false, task.work);
+            // 服务进程只提供文件；渲染由转换完成后的一次增量任务驱动。
+            server = runner.startWebServer(side.modern, task.work);
             if (server == null) throw new IOException("BlueMap 预览进程未启动。");
             synchronized (this) {
                 if (!current(side, task)) { BlueMapRunner.stopProcess(server); return; }
@@ -144,7 +172,9 @@ public final class PreviewManager implements AutoCloseable {
                 if (!current(side, task)) { BlueMapRunner.stopProcess(server); return; }
                 task.port = port;
                 task.status = "done";
+                task.finished = System.currentTimeMillis();
                 task.message = side.modern ? "源地图预览已就绪" : "转换结果预览已就绪";
+                if (!side.modern) { resultRevision++; awaitingResult = false; }
             }
         } catch (Exception e) {
             if (server != null) BlueMapRunner.stopProcess(server);
@@ -152,6 +182,8 @@ public final class PreviewManager implements AutoCloseable {
                 if (side.task == task && !closed) {
                     task.port = 0;
                     task.status = "failed";
+                    task.finished = System.currentTimeMillis();
+                    if (!side.modern) awaitingResult = false;
                     task.message = "预览失败：" + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
                 }
             }
@@ -162,20 +194,77 @@ public final class PreviewManager implements AutoCloseable {
     public synchronized Snapshot before() { return snapshot(before); }
     public synchronized Snapshot after() { return snapshot(after); }
 
-    /** Record that a conversion has rewritten the result world, so its viewer is known to be out of date. */
-    public synchronized void converted() { resultRevision++; }
+    /** 首次打开源地图时使用内容边界，之后保留用户操作的镜头。 */
+    public synchronized String sourceCamera() { return sourceCamera; }
+
+    /** 原有 HTTP 服务和镜头保持不动，等待这次增量渲染的进程成功退出。 */
+    private void refreshResult(Task task) {
+        try {
+            Path renderWorld = prepareResult(task);
+            if (!current(after, task)) return;
+            runner.render(false, renderWorld, task.work, task.port);
+            synchronized (this) {
+                if (!current(after, task)) return;
+                task.status = "done"; task.message = "增量渲染完成，正在更新画面";
+                task.finished = System.currentTimeMillis();
+                resultRevision++; awaitingResult = false;
+            }
+        } catch (Exception e) {
+            synchronized (this) {
+                if (after.task != task || closed) return;
+                task.status = "failed"; task.message = "增量预览失败：" + e.getMessage();
+                task.finished = System.currentTimeMillis(); awaitingResult = false;
+            }
+            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+        }
+    }
+
+    /** 首次和增量更新共用固定副本路径，清空记录也能通知 BlueMap 更新旧瓦片。 */
+    private Path prepareResult(Task task) throws IOException {
+        if (preparedWorlds == null) return task.world;
+        synchronized (this) { task.preparing = true; task.message = "正在筛除结果中的空白区块"; }
+        try {
+            reuseResultResources(task);
+            var prepared = ResultPreviewWorld.prepare(task.world, task.work.resolve("world"));
+            synchronized (this) {
+                task.message = "保留 " + prepared.contentChunks() + " 个内容区块，跳过 " + prepared.skippedChunks()
+                        + " 个空白区块，正在渲染";
+            }
+            return prepared.directory();
+        } finally {
+            synchronized (this) { task.preparing = false; }
+        }
+    }
+
+    /** 升级到稀疏缓存时复用原有客户端资源，避免用户重新下载同一份贴图。 */
+    private void reuseResultResources(Task task) throws IOException {
+        Path previous = root.resolve("result-" + digest(task.source + "\n" + task.world)).resolve("data");
+        Path data = task.work.resolve("data");
+        java.nio.file.Files.createDirectories(data);
+        for (String name : java.util.List.of("minecraft-client-1.12.0.jar", "resourceExtensions.zip")) {
+            Path input = previous.resolve(name), output = data.resolve(name);
+            if (!java.nio.file.Files.exists(output) && java.nio.file.Files.isRegularFile(input))
+                java.nio.file.Files.copy(input, output);
+        }
+    }
+
+    /** 原转换失败时解除预览等待，保留旧画面但不标记成新结果。 */
+    public synchronized void conversionFailed() { awaitingResult = false; }
 
     /** The number of conversions written to the result world so far. */
     public synchronized long resultRevision() { return resultRevision; }
 
     private Snapshot snapshot(Side side) {
         Task t = side.task;
-        if (t == null) return new Snapshot("", "idle", "", 0, 0, 0);
+        if (t == null) return new Snapshot("", side == after && awaitingResult ? "rendering" : "idle", "等待转换输出", 0, 0, 0);
         if (t.status.equals("done") && (t.server == null || !t.server.isAlive())) {
             t.status = "failed"; t.port = 0; t.message = "预览进程已退出，请重新渲染。";
         }
-        return new Snapshot(t.world.toString(), t.status, t.message, t.port, t.generation,
-                Math.max(0, (System.currentTimeMillis() - t.started) / 1000));
+        String status = side == after && awaitingResult && t.status.equals("done") ? "rendering" : t.status;
+        String progress = t.status.equals("rendering") && !t.preparing ? runner.progress(t.work) : "";
+        String message = side == after && awaitingResult && t.status.equals("done") ? "等待本次转换输出并更新预览" : t.message;
+        return new Snapshot(t.world.toString(), status, progress.isEmpty() ? message : progress, t.port, t.generation,
+                Math.max(0, ((t.finished == 0 ? System.currentTimeMillis() : t.finished) - t.started) / 1000));
     }
 
     private void cancel(Side side) {

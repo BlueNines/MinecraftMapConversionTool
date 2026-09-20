@@ -46,6 +46,10 @@ public class ConversionJob {
     private final boolean clearContainers;
     private final String mappingsJson;
     private final boolean approximate;
+    private PreparedWorlds preparedWorlds;
+
+    /** 与源预览共享内容索引；必须在提交后台任务前设置。 */
+    public void prepareWith(PreparedWorlds preparedWorlds) { this.preparedWorlds = preparedWorlds; }
 
     private final AtomicReference<String> status = new AtomicReference<>("idle");
     private final AtomicReference<String> message = new AtomicReference<>("");
@@ -81,8 +85,15 @@ public class ConversionJob {
      */
     public void run() {
         try {
+            PreparedWorlds.Prepared prepared = null;
+            if (preparedWorlds != null) {
+                status.set("preparing");
+                message.set("正在核查内容区块并准备稀疏输入。");
+                prepared = preparedWorlds.prepare(input);
+            }
             status.set("reading");
             WorldConverter converter = new WorldConverter(UUID.randomUUID());
+            converter.setSkipNewEmptyColumns(prepared != null);
             converter.setShiftToFit(shiftToFit);
             converter.setClearContainers(clearContainers);
 
@@ -93,7 +104,7 @@ public class ConversionJob {
                     approximate ? Approximations.merge(mappingsJson) : Approximations.userOnly(mappingsJson)
             )));
 
-            Optional<? extends LevelReader> reader = EncodingType.findReader(input.toFile(), converter);
+            Optional<? extends LevelReader> reader = EncodingType.findReader((prepared == null ? input : prepared.directory()).toFile(), converter);
             if (reader.isEmpty()) {
                 fail("This folder does not look like a Minecraft world that can be read.");
                 return;
@@ -115,11 +126,6 @@ public class ConversionJob {
             // otherwise be added to this one's.
             IncrementalWriter.resetCounters();
             TrackedTask<Void> task = converter.convert(reader.get(), writer.get());
-            AtomicReference<Throwable> failure = new AtomicReference<>();
-            task.future().exceptionally(exception -> {
-                failure.set(exception);
-                return null;
-            });
 
             double reported = -1;
             while (!task.future().isDone()) {
@@ -131,15 +137,14 @@ public class ConversionJob {
                 Thread.sleep(100);
             }
 
-            if (failure.get() != null) {
-                fail("A fatal error occurred during conversion: " + failure.get().getMessage());
-                return;
-            }
+            // 等待异常完成本身，不能在 isDone 与 exceptionally 回调之间竞态误报成功。
+            task.future().join();
 
             status.set("reporting");
             message.set("Writing the conversion report.");
             Files.createDirectories(reportDirectory);
             ConversionReport.write(converter, reader.get(), writer.get(), reportDirectory.toFile());
+            if (prepared != null) writeSelectionReport(prepared.summary());
 
             progress = 1;
             status.set("done");
@@ -165,6 +170,18 @@ public class ConversionJob {
         failed = true;
         status.set("failed");
         message.set(reason);
+    }
+
+    /** 将核查/上下文/跳过数量同时写入机器报告与可读报告。 */
+    private void writeSelectionReport(PreparedWorlds.Summary summary) throws java.io.IOException {
+        var gson = new com.google.gson.GsonBuilder().setPrettyPrinting().create();
+        Path json = reportDirectory.resolve("conversion-report.json");
+        var report = com.google.gson.JsonParser.parseString(Files.readString(json, StandardCharsets.UTF_8)).getAsJsonObject();
+        report.add("selection", gson.toJsonTree(summary));
+        Files.writeString(json, gson.toJson(report), StandardCharsets.UTF_8);
+        String detail = "\n区块筛选：扫描 " + summary.storedChunks() + "；内容 " + summary.contentChunks()
+                + "；邻区上下文 " + summary.contextChunks() + "；跳过空白 " + summary.skippedChunks() + "。\n";
+        Files.writeString(reportDirectory.resolve("conversion-report.txt"), detail, StandardCharsets.UTF_8, java.nio.file.StandardOpenOption.APPEND);
     }
 
     /**

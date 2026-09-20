@@ -1,11 +1,11 @@
-﻿<#
+<#
 .SYNOPSIS
     构建地图降级转换工具，产出一个可以直接拷走运行的 dist/ 目录。
 
 .DESCRIPTION
     把原本要手工做的几步一次做完：
-      1. 编译主程序（gradlew :cli:shadowJar）
-      2. 取回两个版本的 BlueMap（本地已有则直接用）
+      1. 取回两个版本的 BlueMap（本地已有则直接用）
+      2. 编译主程序及旧版预览补丁（gradlew :cli:shadowJar）
       3. 用 jlink 裁出一份自带 Java 运行时（约 63 MB，目标机器不需要装 Java）
     4. 组装 dist/，并写进启动脚本与说明
 
@@ -72,22 +72,7 @@ Ok "JDK: $JavaHome"
 $env:JAVA_HOME = $JavaHome
 
 # ------------------------------------------------------------
-# 2. 编译主程序
-# ------------------------------------------------------------
-Step '编译主程序（gradlew :cli:shadowJar）'
-Push-Location $chunker
-try {
-    & '.\gradlew.bat' ':cli:shadowJar' '--no-daemon' 2>&1 |
-        Select-String 'BUILD|error:|FAILURE' | ForEach-Object { Info $_.Line }
-    if ($LASTEXITCODE -ne 0) { throw '编译失败，上面有原因。' }
-} finally { Pop-Location }
-
-$jarSource = Join-Path $chunker 'build\libs\chunker-cli-1.20.0.jar'
-if (-not (Test-Path $jarSource)) { throw "编译完了但找不到产物：$jarSource" }
-Ok "产物: $([math]::Round((Get-Item $jarSource).Length / 1MB, 2)) MB"
-
-# ------------------------------------------------------------
-# 3. 取回两个版本的 BlueMap
+# 2. 取回两个版本的 BlueMap
 # ------------------------------------------------------------
 Step '取回 BlueMap（两个版本）'
 
@@ -115,16 +100,32 @@ foreach ($bm in $blueMaps) {
 }
 
 # ------------------------------------------------------------
+# 3. 编译主程序
+# ------------------------------------------------------------
+Step '编译主程序（gradlew :cli:shadowJar）'
+Push-Location $chunker
+try {
+    & '.\gradlew.bat' ':cli:shadowJar' '--no-daemon' 2>&1 |
+        Select-String 'BUILD|error:|FAILURE' | ForEach-Object { Info $_.Line }
+    if ($LASTEXITCODE -ne 0) { throw '编译失败，上面有原因。' }
+} finally { Pop-Location }
+
+$jarSource = Join-Path $chunker 'build\libs\chunker-cli-1.20.0.jar'
+if (-not (Test-Path $jarSource)) { throw "编译完了但找不到产物：$jarSource" }
+Ok "产物: $([math]::Round((Get-Item $jarSource).Length / 1MB, 2)) MB"
+
+# ------------------------------------------------------------
 # 4. 组装 dist
 # ------------------------------------------------------------
 Step '组装 dist'
 
-# 清掉上一轮产物，但 -SkipRuntime 时把 runtime/ 留下。
+# 只清理构建产物：work/ 包含用户转换结果与缓存，始终保留。
+# -SkipRuntime 还会保留 runtime/。
 # 必须先判断再删：原来是无条件 Remove-Item $dist，连带 runtime 一起删了，
 # 于是下面那句「存在就跳过」永远为假，-SkipRuntime 实际上是失效的。
 if (Test-Path $dist) {
     Get-ChildItem -Force $dist | Where-Object {
-        -not ($SkipRuntime -and $_.Name -eq 'runtime')
+        $_.Name -ne 'work' -and -not ($SkipRuntime -and $_.Name -eq 'runtime')
     } | Remove-Item -Recurse -Force
 }
 New-Item -ItemType Directory -Force -Path (Join-Path $dist 'bluemap') | Out-Null

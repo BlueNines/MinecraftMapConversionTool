@@ -86,17 +86,20 @@ public class BlueMapRunner {
             throw new IOException("BlueMap build is missing: " + jar.getAbsolutePath());
         }
 
-        ProcessBuilder builder = new ProcessBuilder(
-                javaExecutable.toString(),
-                "-Xmx2G",
-                "-jar",
-                jar.getAbsolutePath(),
+        Path complete = workFolder.resolve("complete-render-v4.marker");
+        boolean repair = !modern && !Files.isRegularFile(complete) && Files.isDirectory(webRoot.resolve("data/result"));
+        // 旧 watcher 可能留下半套缓存；未完成的渲染在下次重试时也必须修复。
+        if (!modern) Files.deleteIfExists(complete);
+        java.util.List<String> command = launchCommand(modern, workFolder, jar, "-Xmx2G");
+        command.addAll(java.util.List.of(
                 "-c",
                 workFolder.toString(),
                 "-v",
                 version,
                 "-r"
-        );
+        ));
+        if (repair) command.add("-f");
+        ProcessBuilder builder = new ProcessBuilder(command);
         builder.directory(workFolder.toFile());
         builder.redirectErrorStream(true);
         Path log = workFolder.resolve("render.log");
@@ -104,7 +107,10 @@ public class BlueMapRunner {
         Process process = builder.start();
         try {
             int exit = process.waitFor();
-            if (exit != 0) throw new IOException("BlueMap rendering failed (exit " + exit + "):\n" + tail(log));
+            String end = tail(log);
+            if (exit != 0 || !end.contains("Your maps are now all up-to-date!")
+                    || end.contains("OutOfMemoryError") || end.contains("Exception in thread"))
+                throw new IOException("BlueMap 渲染未完整结束（退出码 " + exit + "）：\n" + end);
         } finally {
             // waitFor is interruptible. Changing projects must also stop the renderer, not just its Java thread.
             if (process.isAlive()) stopProcess(process);
@@ -112,6 +118,7 @@ public class BlueMapRunner {
         // The webapp and its language files are written by the render itself, so anything that edits
         // them has to run afterwards.
         completeWebRoot(modern, webRoot);
+        if (!modern) Files.writeString(complete, "complete\n", StandardCharsets.UTF_8);
         return webRoot;
     }
 
@@ -159,50 +166,6 @@ public class BlueMapRunner {
     private static final String VIEWER_MARKER = "loaded by the map conversion tool";
 
     /**
-     * Start a viewer that keeps itself up to date.
-     * <p>
-     * This is what makes the preview follow a mapping change. The watcher notices the converted world being
-     * rewritten and re-renders the chunks that were touched, without being told to and without re-rendering the rest.
-     * What counts as "touched" is decided by each chunk's own timestamp, which the converter now dates when it
-     * writes one - see the incremental writer. Chunks the conversion reproduced byte-for-byte are left alone, keep
-     * their old timestamp, and are skipped.
-     * <p>
-     * The render flag is passed as well: the watch only starts after a render, and the initial pass costs a few
-     * seconds when there is nothing new.
-     *
-     * @param modern     true to use the modern build (for the source world), false for the 1.12.2-capable build.
-     * @param workFolder the same work folder used for the render, so it watches and serves what was rendered.
-     * @return the running process, or null if the configuration is missing.
-     * @throws IOException if the process could not be started.
-     */
-    public Process startWatcher(boolean modern, Path workFolder) throws IOException {
-        String jarName = modern ? "BlueMap-5.16-cli.jar" : "BlueMap-1.5.5-cli.jar";
-        File jar = installationDirectory.resolve(jarName).toFile();
-        if (!jar.isFile() || !Files.isDirectory(workFolder)) {
-            return null;
-        }
-
-        ProcessBuilder builder = new ProcessBuilder(
-                javaExecutable.toString(),
-                "-Xmx1G",
-                "-jar",
-                jar.getAbsolutePath(),
-                "-c",
-                workFolder.toString(),
-                "-v",
-                versionOf(workFolder),
-                "-r",
-                "-u",
-                "-w"
-        );
-        builder.directory(workFolder.toFile());
-        builder.redirectErrorStream(true);
-        // The watcher logs every request and every file it notices; nobody is reading it.
-        builder.redirectOutput(ProcessBuilder.Redirect.DISCARD);
-        return builder.start();
-    }
-
-    /**
      * Start a BlueMap web server which keeps serving until it is stopped.
      * <p>
      * The render itself is a one-shot job, but the viewer has to stay up for as long as the user is looking at it,
@@ -220,22 +183,29 @@ public class BlueMapRunner {
             return null;
         }
 
-        ProcessBuilder builder = new ProcessBuilder(
-                javaExecutable.toString(),
-                "-Xmx1G",
-                "-jar",
-                jar.getAbsolutePath(),
+        java.util.List<String> command = launchCommand(modern, workFolder, jar, "-Xmx1G");
+        command.addAll(java.util.List.of(
                 "-c",
                 workFolder.toString(),
                 "-v",
                 versionOf(workFolder),
                 "-w"
-        );
+        ));
+        ProcessBuilder builder = new ProcessBuilder(command);
         builder.directory(workFolder.toFile());
         builder.redirectErrorStream(true);
         // Discard the server's chatter: it logs every request, and nobody is reading it.
-        builder.redirectOutput(ProcessBuilder.Redirect.DISCARD);
+        builder.redirectOutput(ProcessBuilder.Redirect.appendTo(workFolder.resolve("server.log").toFile()));
         return builder.start();
+    }
+
+    /** 只给旧版 BlueMap 注入独立补丁，现代源地图继续使用原始启动方式。 */
+    private java.util.List<String> launchCommand(boolean modern, Path workFolder, File jar, String heap) throws IOException {
+        var command = new java.util.ArrayList<>(java.util.List.of(javaExecutable.toString(), heap, "-XX:+ExitOnOutOfMemoryError"));
+        if (modern) command.addAll(java.util.List.of("-jar", jar.getAbsolutePath()));
+        else command.addAll(java.util.List.of("-cp", LegacyPreviewResources.installPatch(workFolder)
+                + File.pathSeparator + jar.getAbsolutePath(), "de.bluecolored.bluemap.cli.BlueMapCLI"));
+        return command;
     }
 
     /**
@@ -251,9 +221,9 @@ public class BlueMapRunner {
         write(workFolder.resolve("core.conf"), """
                 accept-download: true
                 metrics: false
-                render-thread-count: 2
+                %s: 2
                 data: "%s"
-                """.formatted(data));
+                """.formatted(modern ? "render-thread-count" : "renderThreadCount", data));
 
         write(workFolder.resolve("webserver.conf"), """
                 webroot: "%s"
@@ -272,6 +242,8 @@ public class BlueMapRunner {
                     """.formatted(world));
             installViewerFiles(workFolder, webRoot);
         } else {
+            // 模型兼容包仅影响预览；v4 完成标记保证旧连接模型缓存完整重建一次。
+            LegacyPreviewResources.install(workFolder);
             // The 1.12.2-era build takes a single render.conf listing every map.
             write(workFolder.resolve("render.conf"), """
                     webroot: "%s"
@@ -310,7 +282,10 @@ public class BlueMapRunner {
      * @param webRoot    the web root the webapp is served from.
      */
     private void installViewerFiles(Path workFolder, Path webRoot) throws IOException {
-        write(webRoot.resolve("js/viewer.js"), VIEWER_SCRIPT);
+        try (var refresh = BlueMapRunner.class.getResourceAsStream("/web/viewer-refresh.js")) {
+            if (refresh == null) throw new IOException("缺少瓦片刷新脚本。");
+            write(webRoot.resolve("js/viewer.js"), VIEWER_SCRIPT + "\n" + new String(refresh.readAllBytes(), StandardCharsets.UTF_8));
+        }
         write(webRoot.resolve("js/viewer.css"), VIEWER_CSS);
         if (workFolder == null) return;
         // Only the keys needed here are written: BlueMap keeps its defaults for everything absent, so
@@ -459,213 +434,7 @@ public class BlueMapRunner {
                 if (patch() || ++attempts > 400) clearInterval(timer);
               }, 50);
 
-              // ---- tile-level live updates ----
 
-              var live = { refreshing: false, refreshes: 0, lastRefreshed: 0, lastTileCount: 0 };
-              state.live = live;
-
-              function managers(map) {
-                var list = [];
-                // Each entry carries both the scene to walk and the loader that can rebuild a geometry
-                // tile: the loader belongs to the manager, not to the individual tile.
-                function add(manager) {
-                  if (!manager) return;
-                  list.push({
-                    scene: manager.scene,
-                    loader: manager.tileLoader || manager.loader || null
-                  });
-                }
-                add(map.hiresTileManager);
-                // The modern viewer keeps one manager per lowres level; the 1.12.2-era viewer keeps a
-                // single one. Both shapes are accepted rather than assuming either.
-                var low = map.lowresTileManager;
-                if (Array.isArray(low)) {
-                  for (var i = 0; i < low.length; i++) add(low[i]);
-                } else {
-                  add(low);
-                }
-                return list;
-              }
-
-              // Tiles are drawn one of two ways, and which one decides how a replacement is applied: the
-              // modern viewer keeps a texture per tile, while the 1.12.2-era viewer keeps geometry that
-              // it builds into a mesh. What the tile actually holds is inspected, so both are handled by
-              // the same code instead of guessing from the version.
-              function textureOf(tile) {
-                var uniforms = tile && tile.material && tile.material.uniforms;
-                var image = uniforms && uniforms.textureImage ? uniforms.textureImage.value : null;
-                return image && typeof image === "object" ? image : null;
-              }
-
-              /** The tile's own x and z, taken from the URL it was loaded from. */
-              function tileCoordinates(url) {
-                var parts = String(url || "").split("/");
-                for (var i = 0; i < parts.length - 1; i++) {
-                  var a = parts[i];
-                  var b = parts[i + 1];
-                  if (a.charAt(0) === "x" && b.charAt(0) === "z") {
-                    var x = Number(a.slice(1));
-                    var z = parseFloat(b.slice(1));
-                    if (!isNaN(x) && !isNaN(z)) return { x: x, z: z };
-                  }
-                }
-                return null;
-              }
-
-              function tileUrlOf(tile) {
-                return (tile.userData && tile.userData.tileUrl) || null;
-              }
-
-              // A tile URL is recorded relative to the site root and already includes the map's data folder,
-              // so it resolves against the origin and nothing is prefixed - prefixing it again would ask for
-              // a path that does not exist.
-              function absolute(url) {
-                if (!url) return null;
-                if (/^https?:/i.test(url)) return url;
-                if (url.charAt(0) === "/") return location.origin + url;
-                if (url.slice(0, 2) === "./") return location.origin + "/" + url.slice(2);
-                return location.origin + "/" + url;
-              }
-
-              // BlueMap serves tiles as "public, max-age=86400" with no ETag or Last-Modified, so the only
-              // way to see a rewritten tile is to ask for a URL the browser has not cached.
-              function bust(url, stamp) {
-                return url + (url.indexOf("?") >= 0 ? "&" : "?") + "v=" + stamp;
-              }
-
-              /** Replace a tile that is drawn from a texture. */
-              function refreshTexture(texture, url, stamp) {
-                return new Promise(function (resolve) {
-                  var replacement = new Image();
-                  replacement.crossOrigin = "anonymous";
-                  replacement.onload = function () {
-                    texture.image = replacement;
-                    texture.needsUpdate = true;
-                    resolve(true);
-                  };
-                  replacement.onerror = function () { resolve(false); };
-                  replacement.src = bust(url, stamp);
-                });
-              }
-
-              /**
-               * Replace a tile that is drawn from geometry, by having its own loader rebuild it.
-               *
-               * Geometry cannot be swapped underneath a mesh, so the rebuilt mesh takes the old one's
-               * place in the scene and inherits its transform - that is what makes this an update in
-               * place rather than a reload.
-               */
-              function refreshGeometry(layer, tile, url) {
-                var loader = layer.loader;
-                var coords = tileCoordinates(url);
-                var scene = layer.scene;
-                if (!loader || typeof loader.load !== "function" || !coords || !scene) {
-                  return Promise.resolve(false);
-                }
-
-                return new Promise(function (resolve) {
-                  // This viewer stamps its tile requests with a value it picks once per page load, which
-                  // is exactly what keeps a re-request out of the browser cache. A fresh value makes
-                  // this a URL the browser has not already answered.
-                  try { loader.tileCacheHash = Math.round(1e6 * Math.random()); } catch (ignored) { /* not fatal */ }
-
-                  var settled = false;
-                  var finish = function (ok) { if (!settled) { settled = true; resolve(ok); } };
-                  // A tile that cannot be rebuilt must not hold the whole refresh open.
-                  var guard = setTimeout(function () { finish(false); }, 10000);
-
-                  try {
-                    loader.load(coords.x, coords.z, function (rebuilt) {
-                      clearTimeout(guard);
-                      if (!rebuilt || !rebuilt.isObject3D) { finish(false); return; }
-                      rebuilt.position.copy(tile.position);
-                      rebuilt.scale.copy(tile.scale);
-                      rebuilt.rotation.copy(tile.rotation);
-                      if (tile.layers && rebuilt.layers) rebuilt.layers.mask = tile.layers.mask;
-                      rebuilt.userData = tile.userData;
-                      scene.add(rebuilt);
-                      scene.remove(tile);
-                      if (tile.geometry && tile.geometry.dispose) tile.geometry.dispose();
-                      finish(true);
-                    });
-                  } catch (ignored) {
-                    clearTimeout(guard);
-                    finish(false);
-                  }
-                });
-              }
-
-              /**
-               * Re-fetch every tile currently in the scene, in place. Returns how many were replaced.
-               */
-              function refreshTiles(reason) {
-                var app = window.bluemap;
-                var viewer = app && app.mapViewer;
-                var map = viewer && viewer.map;
-                if (!map) return Promise.resolve(0);
-                if (live.refreshing) return Promise.resolve(0);
-
-                live.refreshing = true;
-                live.reason = reason || "requested";
-
-                var stamp = String(Date.now());
-                var pending = [];
-                var layers = managers(map);
-                for (var i = 0; i < layers.length; i++) {
-                  var layer = layers[i];
-                  var tiles = (layer.scene && layer.scene.children) || [];
-                  // Copied first: replacing a tile changes the list being walked.
-                  var current = tiles.slice();
-                  for (var j = 0; j < current.length; j++) {
-                    var tile = current[j];
-                    var url = absolute(tileUrlOf(tile));
-                    if (!url) continue;
-                    var texture = textureOf(tile);
-                    pending.push(texture
-                      ? refreshTexture(texture, url, stamp)
-                      : refreshGeometry(layer, tile, url));
-                  }
-                }
-
-                return Promise.all(pending).then(function (results) {
-                  var done = 0;
-                  for (var k = 0; k < results.length; k++) if (results[k]) done++;
-                  live.refreshing = false;
-                  live.refreshes++;
-                  live.lastRefreshed = done;
-                  live.lastTileCount = results.length;
-                  return done;
-                }, function () {
-                  live.refreshing = false;
-                  return 0;
-                });
-              }
-
-              // The page embedding this viewer asks for a refresh once it knows a conversion has rewritten
-              // the world. Deliberately not polled here: the page already knows, and asking it means one
-              // mechanism instead of two that can disagree.
-              window.__vantaloomRefreshTiles = refreshTiles;
-
-              // The viewer is shown in an iframe on its own port, so the page around it is a different
-              // origin and cannot reach this function directly. postMessage is the one channel that
-              // works across that boundary, which is why the request arrives as a message rather than
-              // as a direct call.
-              var REFRESH_REQUEST = "vantaloom:refresh-tiles";
-              var REFRESH_DONE = "vantaloom:tiles-refreshed";
-
-              window.addEventListener("message", function (event) {
-                var request = event.data;
-                if (!request || request.type !== REFRESH_REQUEST) return;
-                refreshTiles(request.reason).then(function (count) {
-                  try {
-                    event.source.postMessage({
-                      type: REFRESH_DONE,
-                      count: count,
-                      revision: request.revision
-                    }, "*");
-                  } catch (ignored) { /* the page moved on; nothing to report to */ }
-                });
-              });
             })();
             """;
 
@@ -852,6 +621,27 @@ public class BlueMapRunner {
             while (buffer.hasRemaining() && channel.read(buffer) > 0) { /* bounded log tail */ }
             return new String(buffer.array(), 0, buffer.position(), StandardCharsets.UTF_8);
         }
+    }
+
+    /** 读取有限日志尾部，向前端区分下载、加载资源、渲染和启动服务。 */
+    public String progress(Path workFolder) {
+        Path log = workFolder.resolve("render.log");
+        if (!Files.isRegularFile(log)) return "";
+        try {
+            String text = tail(log);
+            String[] lines = text.split("\\R");
+            for (int i = lines.length - 1; i >= 0; i--) {
+                String line = lines[i];
+                if (line.contains("up-to-date") || line.contains("Stopped.")) return "渲染完成，正在启动本地预览服务";
+                if (line.toLowerCase(java.util.Locale.ROOT).contains("updating map") || line.contains("Update map")) {
+                    var percent = java.util.regex.Pattern.compile("([0-9]+(?:\\.[0-9]+)?)%").matcher(line);
+                    if (percent.find()) return "正在渲染内容区块：" + percent.group(1) + "%";
+                }
+                if (line.contains("Loading resources") || line.contains("Loading minecraft assets")) return "正在加载方块模型和贴图";
+                if (line.contains("Downloading")) return "首次预览正在下载 Minecraft 贴图资源";
+            }
+        } catch (IOException ignored) { /* 渲染日志短暂不可读不应中断状态轮询。 */ }
+        return "";
     }
 
     private static void write(Path path, String content) throws IOException {

@@ -34,6 +34,12 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x app/chunker/gradlew
 
+      - name: Fetch legacy preview compile dependency
+        run: |
+          mkdir -p tools/bin
+          curl --fail --location --retry 3 https://github.com/BlueMap-Minecraft/BlueMap/releases/download/v1.5.5/BlueMap-1.5.5-cli.jar -o tools/bin/BlueMap-1.5.5-cli.jar
+          echo '81cfc444f1ad6bd93db15059f9ce9658c95d574a694f5c8759cd5043daa71f50  tools/bin/BlueMap-1.5.5-cli.jar' | sha256sum --check
+
       # shadowJar is the shipped artifact, so it must build.
       # The tests run after: cli/data (607 MB of per-version data tables) is not
       # part of this repository, so the 5 IdentifierValidationTests that read it
@@ -50,6 +56,9 @@ jobs:
           path: app/chunker/cli/build/reports/tests/
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: Check preview refresh state machine
+        run: node tools/tests/viewer-refresh.cjs
 
       - name: Upload jar
         uses: actions/upload-artifact@v7

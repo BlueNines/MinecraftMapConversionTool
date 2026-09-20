@@ -42,6 +42,23 @@ base.archivesName = "chunker-cli"
 
 java.sourceCompatibility = JavaVersion.VERSION_17
 
+// 旧版预览补丁独立编译、嵌入小 jar，不让 BlueMap 的依赖进入转换器运行时。
+val legacyBlueMap = files(rootProject.file("../../tools/bin/BlueMap-1.5.5-cli.jar"))
+val legacyPreview = sourceSets.create("legacyPreview")
+dependencies {
+    add(legacyPreview.compileOnlyConfigurationName, legacyBlueMap)
+    testImplementation(legacyPreview.output)
+    testImplementation(legacyBlueMap)
+}
+val legacyPreviewJar = tasks.register<Jar>("legacyPreviewJar") {
+    archiveFileName.set("legacy-preview-patch.jar")
+    destinationDirectory.set(layout.buildDirectory.dir("legacy-preview"))
+    from(legacyPreview.output)
+}
+tasks.processResources {
+    from(legacyPreviewJar) { into("web") }
+}
+
 publishing {
     publications.create<MavenPublication>("maven") {
         from(components["java"])
