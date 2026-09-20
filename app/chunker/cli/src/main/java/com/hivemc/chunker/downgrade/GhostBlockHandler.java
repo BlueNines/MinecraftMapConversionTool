@@ -175,9 +175,14 @@ public final class GhostBlockHandler implements LosslessBlockHandler {
         }
 
         // 精确签名查不到：这个状态在目标版本里没有对应物（映射链里没有定义，
-        // 生成器宁可跳过也不编值）。此时回落到同一方块的默认态——
-        // 「状态不精确」远好于「整块变空气」。
-        Integer fallback = states.fallbackRawId();
+        // 生成器宁可跳过也不编值）。此时改用【最接近的已知状态】——
+        // 「状态不精确」远好于「整块变空气」，也好于回落到一个语义无关的默认值。
+        //
+        // 不能拿「raw id 最小的那条」当默认值：生成器按目标状态 id 升序分配编号，
+        // 而 bool 属性的下标 0 表示 true（vanilla 顺序是 [true, false]），
+        // 所以编号最小的那条恰好是【所有 bool 都为 true】的状态——
+        // 对墙/楼梯/活板门就是 waterlogged=1，回落过去会让整片方块变成含水。
+        Integer fallback = states.nearestRawId(signature);
         if (fallback == null) return Optional.empty();
         fallbackHits.increment();
         if (fallbackLogged.compareAndSet(false, true)) {
@@ -258,7 +263,59 @@ public final class GhostBlockHandler implements LosslessBlockHandler {
      * @param knownSignatures 该方块已知的全部签名，回落时打印用
      */
     private record BlockStates(Set<String> attributes, Map<String, Integer> bySignature,
-                               Integer fallbackRawId, String knownSignatures) {
+                               String knownSignatures) {
+
+        /**
+         * 在已知签名里找与 {@code requested} 最接近的一条，返回它的 raw id。
+         * <p>
+         * 逐个属性比对，取「取值相同个数最多」的那条；平局取签名字典序更小的，
+         * 保证同一输入永远得到同一结果（转换结果可复现）。
+         * <p>
+         * <b>为什么不能直接用「raw id 最小的那条」。</b>
+         * 生成器按目标状态 id 升序分配编号，而 bool 的下标 0 表示 true
+         * （vanilla 顺序 [true, false]），于是编号最小的那条恰好是全部 bool
+         * 为 true 的状态——墙/楼梯/活板门那就是 waterlogged=1。
+         * 回落过去会把整片方块变成含水，而它与源状态毫无关系。
+         */
+        Integer nearestRawId(final String requested) {
+            final Map<String, String> want = parseSignature(requested);
+            Integer bestRaw = null;
+            int bestScore = -1;
+            String bestSig = null;
+            for (final Map.Entry<String, Integer> entry : bySignature.entrySet()) {
+                final String candidate = entry.getKey();
+                final Map<String, String> have = parseSignature(candidate);
+                int score = 0;
+                for (final Map.Entry<String, String> w : want.entrySet()) {
+                    final String v = have.get(w.getKey());
+                    if (v != null && v.equals(w.getValue())) {
+                        score++;
+                    }
+                }
+                if (score > bestScore || (score == bestScore && bestSig != null
+                        && candidate.compareTo(bestSig) < 0)) {
+                    bestScore = score;
+                    bestRaw = entry.getValue();
+                    bestSig = candidate;
+                }
+            }
+            return bestRaw;
+        }
+    }
+
+    /** 把 {@code facing=north,waterlogged=0} 拆成「属性名 → 取值」。 */
+    private static Map<String, String> parseSignature(final String signature) {
+        final Map<String, String> out = new HashMap<>(8);
+        if (signature == null || signature.isEmpty()) {
+            return out;
+        }
+        for (final String field : signature.split(",")) {
+            final int eq = field.indexOf('=');
+            if (eq > 0) {
+                out.put(field.substring(0, eq).trim(), field.substring(eq + 1).trim());
+            }
+        }
+        return out;
     }
 
     /** 载入结果。 */
@@ -317,19 +374,13 @@ public final class GhostBlockHandler implements LosslessBlockHandler {
         }
         for (Map.Entry<String, Map<String, Integer>> e : ids.entrySet()) {
             Map<String, Integer> bySignature = e.getValue();
-            // 默认态 = 目标状态 id 最小的那条（与生成器的枚举顺序一致）。
-            // raw id 是单调递增分配的，所以直接取最小的 raw id 即可。
-            Integer fallback = null;
-            for (Integer r : bySignature.values()) {
-                if (fallback == null || r < fallback) fallback = r;
-            }
             StringBuilder known = new StringBuilder();
             for (String s : new TreeSet<>(bySignature.keySet())) {
                 if (known.length() > 0) known.append(" / ");
                 known.append(s.isEmpty() ? "（无状态）" : s);
                 if (known.length() > 300) { known.append(" …"); break; }
             }
-            result.put(e.getKey(), new BlockStates(attrs.get(e.getKey()), bySignature, fallback, known.toString()));
+            result.put(e.getKey(), new BlockStates(attrs.get(e.getKey()), bySignature, known.toString()));
         }
         return new Loaded(result, rows);
     }
