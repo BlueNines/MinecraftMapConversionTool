@@ -47,6 +47,12 @@ app/chunker/cli/src/main/java/com/hivemc/chunker/downgrade/
     ShiftStats.java              平移统计
     SurveyLevelWriter.java       只测量不写出的写入器
     SurveyResult.java            测量结果
+    LosslessBlockHandler.java    无损处理接口（特殊方块的接入点）
+    LosslessBlocks.java          无损处理的调度与待处理报告
+    GhostBlockHandler.java       幽灵方块通道：把 1.12.2 装不下的方块连状态一起写成幽灵编号
+
+app/chunker/cli/src/main/resources/ghostblocks/
+    channel-patches.txt          20037 个（方块，状态）的幽灵编号对照表（由 GhostBlocks 项目生成，不要手改）
 
 app/chunker/cli/src/main/java/com/hivemc/chunker/web/
     Main.java                    入口（默认开界面，带 cli 参数时走命令行）
@@ -70,8 +76,8 @@ app/chunker/cli/src/main/resources/web/
 | `cli/.../cli/CLI.java` | 加 `--shiftToFit`、`--noApproximations`；接上报告与近似替换 |
 | `cli/.../conversion/WorldConverter.java` | 接入测量、平移、实体过滤、容器清空；未映射方块与替换的统计 |
 | `cli/.../encoding/base/Converter.java` | 加两个统计用的默认方法 |
-| `cli/.../java/base/resolver/JavaResolversBuilder.java` | 在写出处记录「替换了什么」与「丢了什么」 |
-| `cli/.../java/base/writer/JavaChunkWriter.java` | **按字段名排序后再写 NBT**（否则每次输出顺序随机，见下） |
+| `cli/.../java/base/resolver/JavaResolversBuilder.java` | 在写出处记录「替换了什么」与「丢了什么」；`resolveLegacyBlockIdentifier` 新增（与正式编码共用映射，但不记损失） |
+| `cli/.../java/base/writer/JavaChunkWriter.java` | **按字段名排序后再写 NBT**（否则每次输出顺序随机，见下）；无损扩展钩子接入（传逐块原生编码） |
 | `cli/.../java/base/writer/JavaColumnWriter.java` | 同上；接入增量写入 |
 | `cli/.../java/base/writer/JavaWorldWriter.java` | 增量写入：内容没变就不重写、变了才打时间戳 |
 | `cli/.../handlers/pipeline/Pipeline.java` | 新增追加式的 `addColumnHandler()`（原方法会覆盖预变换处理器） |

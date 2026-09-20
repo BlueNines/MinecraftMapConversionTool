@@ -139,15 +139,18 @@ public class JavaChunkWriter {
 
                 // Get key + value
                 ChunkerBlockIdentifier identifier = chunk.getPalette().get(x, y, z, ChunkerBlockIdentifier.AIR);
+                // 原生会写成什么：id 为 0 表示原生表示不了。先算出来，无损扩展要靠它判断该不该接管。
+                LegacyIdentifier nativeValue = resolvers.resolveLegacyBlockIdentifier(identifier)
+                        .orElse(new LegacyIdentifier(0, (byte) 0));
                 java.util.Optional<LegacyIdentifier> handled = java.util.Optional.empty();
                 // 无损扩展只挂在实际旧版写入路径，分析用临时试转也走同一个入口。
                 if (converter instanceof com.hivemc.chunker.conversion.WorldConverter worldConverter) {
                     var lossless = worldConverter.getLosslessBlocks();
-                    if (lossless != null && lossless.needsHandling(identifier,
-                            resolvers.resolveLegacyBlockIdentifier(identifier).orElse(new LegacyIdentifier(0, (byte)0)))) {
+                    if (lossless != null && lossless.needsHandling(identifier, nativeValue)) {
                         handled = lossless.handle(new com.hivemc.chunker.downgrade.LosslessBlockHandler.Block(
                                 identifier, dimension, chunkerColumn.getPosition().chunkX() * 16 + x,
-                                chunk.getY() * 16 + y, chunkerColumn.getPosition().chunkZ() * 16 + z));
+                                chunk.getY() * 16 + y, chunkerColumn.getPosition().chunkZ() * 16 + z,
+                                nativeValue));
                     }
                 }
                 LegacyIdentifier legacyIdentifier = handled.isPresent() ? handled.get() : resolvers.writeLegacyBlockIdentifier(identifier);

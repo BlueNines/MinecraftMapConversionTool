@@ -16,7 +16,7 @@ public final class LosslessBlocks {
     private final LosslessBlockHandler handler;
     private final Map<com.hivemc.chunker.conversion.intermediate.column.chunk.identifier.type.block.ChunkerBlockType, Boolean> candidates = new ConcurrentHashMap<>();
 
-    /** Web 默认接入位置：后续用真正的处理器替换这里的日志占位实现。 */
+    /** 不接任何处理器的空调度：全部计入待处理报告，不自动选择近似方块。 */
     public LosslessBlocks() { this(block -> Optional.empty()); }
 
     /** 外部处理方直接注入此接口，复用扫描、转换、写盘、报告和预览流程。 */
@@ -28,13 +28,13 @@ public final class LosslessBlocks {
         }
     }
 
-    /** 用户显式映射不进入占位接口；其余旧替换项和原生不支持项统一调度。 */
+    /** 用户显式映射不进调度；其余内置替换项和原生不支持项统一交给处理器。 */
     public boolean needsHandling(ChunkerBlockIdentifier block, LegacyIdentifier nativeValue) {
         return !block.isAir() && block.getPreservedIdentifier() == null
                 && (nativeValue.id() == 0 || candidates.computeIfAbsent(block.getType(), key -> replacements.contains(name(block))));
     }
 
-    /** 真处理器可返回编码；占位只聚合日志，不自动选择近似方块。 */
+    /** 处理器返回空表示不接管，此时只聚合报告，不自动选择近似方块。 */
     public Optional<LegacyIdentifier> handle(LosslessBlockHandler.Block block) {
         var handled = handler.handle(block);
         if (handled.isPresent()) {
@@ -44,20 +44,20 @@ public final class LosslessBlocks {
             return handled;
         }
         pending.computeIfAbsent(block.identifier(), key -> {
-            System.out.println("[无损转换待接入] " + name(key) + " " + key.toStateString()
+            System.out.println("[无损转换] 未接管，回落原生编码：" + name(key) + " " + key.toStateString()
                     + " 示例位置=" + block.dimension() + ":" + block.x() + "," + block.y() + "," + block.z());
             return new LongAdder();
         }).increment();
         return Optional.empty();
     }
 
-    /** 保留自定义命名空间。 */
-    private static String name(ChunkerBlockIdentifier block) {
+    /** 保留自定义命名空间。与幽灵表、转换报告使用同一套写法，避免两边漂移。 */
+    static String name(ChunkerBlockIdentifier block) {
         return block.getType() instanceof ChunkerCustomBlockType custom ? custom.getIdentifier()
                 : "minecraft:" + block.getType().toString().toLowerCase(Locale.ROOT);
     }
 
-    /** 完整列出尚未处理的方块状态及数量，避免将占位阶段误认为真正无损完成。 */
+    /** 完整列出未被接管、回落到原生编码的方块状态及数量。 */
     public JsonObject report() {
         JsonObject result = new JsonObject(); JsonArray rows = new JsonArray(); long total = 0;
         for (var entry : pending.entrySet().stream().sorted(Comparator.comparing(e -> e.getKey().toString())).toList()) {
@@ -66,7 +66,7 @@ public final class LosslessBlocks {
             total += entry.getValue().sum(); rows.add(row);
         }
         result.addProperty("pendingBlocks", total); result.add("pending", rows);
-        result.addProperty("message", "特殊方块处理接口尚未接入；未处理项使用原生 1.12.2 编码，不支持的方块为空气占位。此阶段不保证无损。");
+        result.addProperty("message", "这些方块未被接管，回落为原生编码。原生表示不了的（不在此表也不在 GhostBlocks 幽灵表里）会变成空气，数量见 unmapped。");
         return result;
     }
 }

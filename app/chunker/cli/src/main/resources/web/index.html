@@ -78,7 +78,7 @@ html[data-theme=light]{color-scheme:light;--bg:#f2f5f5;--panel:#fff;--surface:#f
 <div class="world-results" id="worldList" hidden aria-label="找到的存档"></div>
 <label class="field"><span>源地图路径</span><input id="input" type="text" placeholder="或粘贴存档文件夹路径" spellcheck="false" autocomplete="off" data-lock><small>选到包含 level.dat 的文件夹本身。</small></label>
 <div class="flow-actions"><span class="muted">原地图不会被覆盖</span><button id="toMode" class="btn primary" data-lock>下一步：选择模式 →</button></div></div></section>
-<section id="flow-mode" class="flow-page" hidden><div class="flow-intro"><span class="eyebrow">02 / CONVERSION</span><h1>选择地图的转换方式。</h1><p id="chosenMap"></p></div><div class="mode-options" role="group" aria-label="转换模式"><button class="mode-card" data-mode="downgrade" aria-pressed="true" data-lock><span class="tag good">常规转换</span><h2>降级转换地图</h2><p>将高版本方块替换成 1.12.2 中相近的方块，优先保留建筑外观。</p><span>可调整自动替换与自定义规则 ↗</span></button><button class="mode-card" data-mode="lossless" aria-pressed="false" data-lock><span class="tag warn">处理接口待接入</span><h2>无损转换地图</h2><p>默认不做近似替换，保留手动规则。特殊方块交给预留处理接口。</p><span>当前不保证无损，不支持项为空气占位</span></button></div><select id="conversionMode" hidden aria-label="转换模式"><option value="downgrade">降级转换地图</option><option value="lossless">无损转换地图</option></select><p id="modeHint" class="muted"></p><div class="flow-actions"><button id="backMap" class="btn quiet" data-lock>← 重新选择地图</button><button id="toWorkspace" class="btn primary" data-lock>进入规则工作区 →</button></div></section>
+<section id="flow-mode" class="flow-page" hidden><div class="flow-intro"><span class="eyebrow">02 / CONVERSION</span><h1>选择地图的转换方式。</h1><p id="chosenMap"></p></div><div class="mode-options" role="group" aria-label="转换模式"><button class="mode-card" data-mode="downgrade" aria-pressed="true" data-lock><span class="tag good">常规转换</span><h2>降级转换地图</h2><p>将高版本方块替换成 1.12.2 中相近的方块，优先保留建筑外观。</p><span>可调整自动替换与自定义规则 ↗</span></button><button class="mode-card" data-mode="lossless" aria-pressed="false" data-lock><span class="tag good">幽灵方块通道</span><h2>无损转换地图</h2><p>默认不做近似替换：1.12.2 没有的方块写成幽灵 id 原样保留，而不是换成替代品。</p><span>需服务端安装 GhostBlocks 插件；楼梯朝向、活板门开合等状态一并保留</span></button></div><select id="conversionMode" hidden aria-label="转换模式"><option value="downgrade">降级转换地图</option><option value="lossless">无损转换地图</option></select><p id="modeHint" class="muted"></p><div class="flow-actions"><button id="backMap" class="btn quiet" data-lock>← 重新选择地图</button><button id="toWorkspace" class="btn primary" data-lock>进入规则工作区 →</button></div></section>
 <main class="workspace" id="flow-workspace" hidden>
 <div class="workspace-header"><div><div class="breadcrumb">工作空间 <span>/</span> <b id="projectName">新建转换</b></div><h1 id="pageTitle">每一次迁移，都心中有数。</h1><div class="subheading" id="pageSubtitle">先分析，再转换。让重要的建筑细节留下来。</div></div><div class="header-actions"><span class="tag" id="draftBadge">草稿保存在此浏览器</span><button id="rescanBtn" class="btn quiet" hidden data-lock><svg class="icon"><use href="#i-refresh"/></svg>重新分析</button><button id="primaryBtn" class="btn primary" data-lock><svg class="icon"><use href="#i-folder"/></svg><span>选择地图</span></button></div></div>
 <nav class="tabs" role="tablist" aria-label="工作区">
@@ -262,8 +262,8 @@ function renderHeader() {
 }
 function renderNotices() {
   const notices=[];
-  if(state.mode==='lossless')notices.push('无损处理接口尚未接入：默认不做近似替换，手动规则仍生效。不支持的方块暂为空气占位。');
-  if(state.report?.lossless)notices.push('最近报告有 '+count(state.report.lossless.pendingBlocks)+' 个方块等待接入处理；导出报告可查看完整清单。');
+  if(state.mode==='lossless')notices.push('无损模式：1.12.2 没有的方块写成幽灵 id 保留，需服务端安装 GhostBlocks 插件才能正确显示；楼梯朝向、活板门开合等状态一并保留。');
+  if(state.report?.lossless)notices.push('最近报告有 '+count(state.report.lossless.pendingBlocks)+' 个方块未被接管、回落原生编码；导出报告可查看完整清单。');
   if(state.report && state.scanKey && state.scanKey!==scanSignature()) notices.push('映射或转换策略已修改。下方仍是最近一次报告，可重新分析，或应用修改并转换。');
   if(!state.shift) notices.push('现有后端的预分析固定按自动上移计算；你已关闭上移，请以正式转换报告为准。');
   if(invalidRule()) notices.push('存在格式不完整的自定义规则，分析与转换前需要修正。');
@@ -530,7 +530,7 @@ function requestConversion() {
   if(overlappingPaths(state.source,state.output)){notify('输出目录不能与源地图相同或互相嵌套。','bad');return;}
   pendingConversion={...config(),key:signature(),scanKey:scanSignature()};
   const r=state.report,lines=['源地图：'+state.source,'输出：'+(state.output||'工具目录下自动创建的 converted 子目录'),'自定义规则：'+[...state.drafts].filter(([,v])=>v.trim()).length+' 条'];
-  if(state.mode==='lossless')lines.push('无损模式的特殊处理尚未接入，不支持的方块暂为空气占位。');
+  if(state.mode==='lossless')lines.push('无损模式：1.12.2 没有的方块写成幽灵 id 保留，服务端需装 GhostBlocks 插件；楼梯朝向、活板门开合等状态一并保留。');
   if(r)lines.push('最近报告：'+count(r.unmapped?.blocksLost)+' 个方块变成空气，'+count(r.substitutions?.totalBlocksChanged)+' 个方块被替换。');
   if(state.scanKey!==scanSignature())lines.push('注意：配置已变化，最近报告不是这次转换的精确预测。');
   lines.push('容器物品将清空。'+(!state.shift?'自动上移已关闭，预分析高度结果不适用。':''));
@@ -730,7 +730,7 @@ $('input').oninput=()=>{$('toMode').disabled=Boolean(state.busy)||!$('input').va
 function renderMode(){
   const lossless=state.mode==='lossless';
   $('approximateRow').hidden=lossless;
-  $('modeHint').textContent=lossless?'输出仍为 1.12.2。默认不自动替换，手动规则优先；特殊处理接口尚未接入，不支持的方块暂为空气占位。':'按现有规则转换为 1.12.2。';
+  $('modeHint').textContent=lossless?'输出仍为 1.12.2。不自动替换：1.12.2 没有的方块写成幽灵 id 原样保留，需服务端安装 GhostBlocks 插件；楼梯朝向、活板门开合等状态一并保留。':'按现有规则转换为 1.12.2。';
 }
 $('conversionMode').onchange=()=>{state.mode=$('conversionMode').value;renderMode();save();renderAll();};
 ['shift','approximate'].forEach(id=>$(id).onchange=()=>{state[id]=$(id).checked;save();renderHeader();renderMappings();});

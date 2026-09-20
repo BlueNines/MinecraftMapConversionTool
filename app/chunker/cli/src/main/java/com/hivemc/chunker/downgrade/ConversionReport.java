@@ -170,6 +170,19 @@ public final class ConversionReport {
         shift.addProperty("sectionsAboveLimit", result.clippedSections());
         shift.addProperty("contentLostToHeightLimit", result.clipped());
 
+        // Reported in source co-ordinates with the applied shift alongside it, so the number is the one a player would
+        // see in the written world and can be checked against level.dat.
+        SpawnPoint spawn = result.spawnPoint();
+        if (spawn == null) {
+            shift.addProperty("spawnFound", false);
+        } else {
+            boolean shifted = converter.shouldShiftToFit() && result.requiresShift();
+            shift.addProperty("spawnFound", true);
+            shift.addProperty("spawnX", spawn.x());
+            shift.addProperty("spawnY", spawn.y() + (shifted ? result.shiftY() : 0));
+            shift.addProperty("spawnZ", spawn.z());
+        }
+
         ShiftStats stats = converter.getShiftStats();
         shift.addProperty("sectionsMoved", stats.getShiftedSections());
         shift.addProperty("sectionsDropped", stats.getClippedSections());
@@ -304,9 +317,9 @@ public final class ConversionReport {
      */
     public static String summary(JsonObject report) {
         StringBuilder builder = new StringBuilder();
-        if (report.has("lossless")) builder.append("无损转换（接口占位阶段）：待处理 ")
+        if (report.has("lossless")) builder.append("无损转换（幽灵方块通道）：另有 ")
                 .append(report.getAsJsonObject("lossless").get("pendingBlocks").getAsLong())
-                .append(" 个方块；详情见 conversion-report.json 的 lossless.pending。尚未接入的方块不保证保留。\n");
+                .append(" 个方块未被接管、回落原生编码；原生表示不了又不在幽灵表里的仍会变成空气（见 unmapped）。\n");
         JsonObject versions = report.getAsJsonObject("versions");
         builder.append("Conversion report").append(System.lineSeparator());
         builder.append("  Source: ").append(versions.get("sourceFormat").getAsString())

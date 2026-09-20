@@ -47,7 +47,15 @@ public class ConversionJob {
     private final String mappingsJson;
     private final boolean approximate;
     private final boolean lossless;
-    private com.hivemc.chunker.downgrade.LosslessBlockHandler losslessHandler = block -> Optional.empty();
+
+    /**
+     * 无损模式下的特殊方块处理器。默认是幽灵方块通道；表缺失时自动退化为空实现，
+     * 结果与未接入时一致（这些方块变空气），不拖垮整个转换任务。
+     * <p>
+     * 只读、无状态、线程安全：任务会并发调用它。
+     */
+    private com.hivemc.chunker.downgrade.LosslessBlockHandler losslessHandler =
+            com.hivemc.chunker.downgrade.GhostBlockHandler.createOrEmpty();
 
     /** 后续处理方在 run 前注入线程安全实现，分析与正式转换均复用此任务入口。 */
     public void setLosslessHandler(com.hivemc.chunker.downgrade.LosslessBlockHandler handler) {

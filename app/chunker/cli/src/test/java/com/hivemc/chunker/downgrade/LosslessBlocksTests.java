@@ -26,8 +26,8 @@ class LosslessBlocksTests {
     /** 占位不会自行选择替换方块，多个实例只累计到一条状态记录。 */
     @Test void placeholderReportsPendingAndInjectedHandlerProducesEncoding() {
         var source = new ChunkerBlockIdentifier(ChunkerVanillaBlockType.QUARTZ_BRICKS);
-        var block = new LosslessBlockHandler.Block(source,Dimension.OVERWORLD,10,20,30);
         var air = new LegacyIdentifier(0,(byte)0);
+        var block = new LosslessBlockHandler.Block(source,Dimension.OVERWORLD,10,20,30,air);
         var service = new LosslessBlocks();
         assertTrue(service.handle(block).isEmpty());service.handle(block);
         assertEquals(2,service.report().get("pendingBlocks").getAsLong());
