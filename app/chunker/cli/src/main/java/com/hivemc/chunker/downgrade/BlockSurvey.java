@@ -25,6 +25,13 @@ public final class BlockSurvey {
      */
     public static final int SECTION_SIZE = 16;
 
+    /**
+     * How many chunks wide a cell is, as a power of two. Cells exist only to bound the memory used to remember where
+     * the ground is, so they want to be large enough that the count stays small and small enough that the ground in
+     * one cell is fairly uniform.
+     */
+    private static final int CELL_SHIFT = 2;
+
     private final AtomicInteger lowestBlockY = new AtomicInteger(Integer.MAX_VALUE);
     private final AtomicInteger lowestSectionY = new AtomicInteger(Integer.MAX_VALUE);
     private final AtomicInteger highestSectionY = new AtomicInteger(Integer.MIN_VALUE);
@@ -32,6 +39,11 @@ public final class BlockSurvey {
     private final AtomicInteger nonEmptySections = new AtomicInteger();
     private final AtomicInteger blockEntityCount = new AtomicInteger();
     private final AtomicInteger entityCount = new AtomicInteger();
+    private final AtomicInteger minChunkX = new AtomicInteger(Integer.MAX_VALUE);
+    private final AtomicInteger maxChunkX = new AtomicInteger(Integer.MIN_VALUE);
+    private final AtomicInteger minChunkZ = new AtomicInteger(Integer.MAX_VALUE);
+    private final AtomicInteger maxChunkZ = new AtomicInteger(Integer.MIN_VALUE);
+    private final ConcurrentHashMap<Long, ConcurrentHashMap<Integer, int[]>> cellSurfaces = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<ChunkerBlockIdentifier, LongAdder> blockCounts = new ConcurrentHashMap<>();
 
     /**
@@ -110,6 +122,119 @@ public final class BlockSurvey {
     }
 
     /**
+     * Record the ground level of one block column, grouped into a coarse cell.
+     * <p>
+     * A modern world keeps its spawn at Y=-60 or lower, which the target format has no room for, and a server handed
+     * such a value reports "safe spawn not found" and refuses the world. The columns themselves know where the ground
+     * is, so the survey records it while it is already looking at them.
+     * <p>
+     * Each cell keeps a tally of the heights its columns reported, which is what lets the spawn be placed on ground
+     * the world actually has: the prevailing height is worked out across every cell at the end, and a column measured
+     * at exactly that height is one whose top block sits level with the floor rather than on a roof.
+     *
+     * @param chunkX   the chunk X co-ordinate of the column.
+     * @param chunkZ   the chunk Z co-ordinate of the column.
+     * @param blockX   the block X co-ordinate the surface was measured at.
+     * @param blockZ   the block Z co-ordinate the surface was measured at.
+     * @param surfaceY the Y of the highest non-air block. This is routinely negative: worlds from 1.18 onwards
+     *                 reach down to Y=-64, so a build can perfectly well have its floor below zero.
+     */
+    public void observeGround(int chunkX, int chunkZ, int blockX, int blockZ, int surfaceY) {
+        updateMin(minChunkX, chunkX);
+        updateMax(maxChunkX, chunkX);
+        updateMin(minChunkZ, chunkZ);
+        updateMax(maxChunkZ, chunkZ);
+
+        // {times seen, an X and a Z which had it}, so a representative column travels with the count.
+        ConcurrentHashMap<Integer, int[]> heights = cellSurfaces.computeIfAbsent(
+                cellKey(chunkX >> CELL_SHIFT, chunkZ >> CELL_SHIFT), ignored -> new ConcurrentHashMap<>());
+        // compute is used rather than merge because the array is mutated in place and must not be raced on.
+        heights.compute(surfaceY, (height, tally) -> {
+            if (tally == null) return new int[]{1, blockX, blockZ};
+            tally[0]++;
+            return tally;
+        });
+    }
+
+    /**
+     * Choose where a player should arrive, in the co-ordinates of the source world.
+     * <p>
+     * The height is deliberately not adjusted for any shift here: the writer decides whether the world moves and by
+     * how much, and baking a guess into the measurement would only be wrong when no shift happens.
+     *
+     * @return the spawn position, or null if the world held no ground to stand on.
+     */
+    private SpawnPoint chooseSpawn() {
+        if (cellSurfaces.isEmpty()) return null;
+
+        // The world's prevailing surface height is what a floor looks like. Taking it from the whole world rather than
+        // from one cell is what makes it trustworthy: over a build of any size the floor outweighs every other height
+        // put together, whereas inside a single cell the roofs of whatever stands there can easily outnumber it.
+        int groundY = globalGroundHeight();
+
+        // Aim for the middle of the build rather than weighing every cell equally: a long tail of outlying cells would
+        // otherwise drag the answer away from the part which is actually built up.
+        int centerCellX = ((minChunkX.get() + maxChunkX.get()) / 2) >> CELL_SHIFT;
+        int centerCellZ = ((minChunkZ.get() + maxChunkZ.get()) / 2) >> CELL_SHIFT;
+
+        // Only cells containing a column at that height are eligible, and among those the nearest to the middle wins.
+        // A column measured at exactly the prevailing height is one whose top block sits level with the rest of the
+        // floor, so it offers somewhere to land; a cell with nothing at that height offers only roofs.
+        SpawnPoint best = null;
+        long bestDistance = Long.MAX_VALUE;
+        for (Map.Entry<Long, ConcurrentHashMap<Integer, int[]>> entry : cellSurfaces.entrySet()) {
+            int[] tally = entry.getValue().get(groundY);
+            if (tally == null) continue;
+
+            long cellX = entry.getKey() >> 32;
+            long cellZ = (int) entry.getKey().longValue();
+            long distance = (cellX - centerCellX) * (cellX - centerCellX) + (cellZ - centerCellZ) * (cellZ - centerCellZ);
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                best = new SpawnPoint(tally[1], groundY, tally[2]);
+            }
+        }
+
+        // Every cell that exists holds at least one measurement and the prevailing height was picked from those
+        // measurements, so a match is guaranteed. The check is the method's documented contract, not a repair.
+        if (best == null) return null;
+
+        // One block above the ground so the player lands on it rather than inside it.
+        return new SpawnPoint(best.x(), best.y() + 1, best.z());
+    }
+
+    /**
+     * Find the world's prevailing surface height by counting every column's surface.
+     * <p>
+     * Only call this once ground has been measured: it returns -1 otherwise, and -1 is itself a perfectly ordinary
+     * surface height in a world which reaches below zero.
+     *
+     * @return the most common ground height.
+     */
+    private int globalGroundHeight() {
+        ConcurrentHashMap<Integer, LongAdder> totals = new ConcurrentHashMap<>();
+        for (ConcurrentHashMap<Integer, int[]> cell : cellSurfaces.values()) {
+            for (Map.Entry<Integer, int[]> height : cell.entrySet()) {
+                totals.computeIfAbsent(height.getKey(), ignored -> new LongAdder()).add(height.getValue()[0]);
+            }
+        }
+
+        int modeY = -1;
+        long most = -1;
+        for (Map.Entry<Integer, LongAdder> entry : totals.entrySet()) {
+            if (entry.getValue().sum() > most) {
+                most = entry.getValue().sum();
+                modeY = entry.getKey();
+            }
+        }
+        return modeY;
+    }
+
+    private static long cellKey(int cellX, int cellZ) {
+        return ((long) cellX << 32) | (cellZ & 0xFFFFFFFFL);
+    }
+
+    /**
      * Whether anything at all was found in the world.
      *
      * @return true if no sections, blocks or entities were observed.
@@ -127,7 +252,7 @@ public final class BlockSurvey {
      */
     public SurveyResult finish(int minSectionY, int maxSectionY) {
         if (isEmpty()) {
-            return new SurveyResult(0, 0, 0, 0, 0, 0, false);
+            return new SurveyResult(0, 0, 0, 0, 0, 0, false, null);
         }
 
         int lowest = lowestBlockY.get();
@@ -158,7 +283,8 @@ public final class BlockSurvey {
                 nonEmptySections.get(),
                 shift,
                 clippedSections,
-                clipped
+                clipped,
+                chooseSpawn()
         );
     }
 

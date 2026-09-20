@@ -1,5 +1,6 @@
 package com.hivemc.chunker.conversion.encoding.java.base.writer;
 
+import com.hivemc.chunker.conversion.WorldConverter;
 import com.hivemc.chunker.conversion.encoding.base.Converter;
 import com.hivemc.chunker.conversion.encoding.base.Version;
 import com.hivemc.chunker.conversion.encoding.base.writer.LevelWriter;
@@ -16,6 +17,8 @@ import com.hivemc.chunker.conversion.intermediate.level.ChunkerLevelPlayer;
 import com.hivemc.chunker.conversion.intermediate.column.biome.ChunkerBiome;
 import com.hivemc.chunker.conversion.intermediate.level.ChunkerLevelSettings;
 import com.hivemc.chunker.conversion.intermediate.level.map.ChunkerMap;
+import com.hivemc.chunker.downgrade.SpawnPoint;
+import com.hivemc.chunker.downgrade.SurveyResult;
 import com.hivemc.chunker.nbt.TagType;
 import com.hivemc.chunker.nbt.tags.Tag;
 import com.hivemc.chunker.nbt.tags.collection.CompoundTag;
@@ -474,11 +477,15 @@ public class JavaLevelWriter implements LevelWriter, JavaReaderWriter {
         // Set the last played
         data.put("LastPlayed", Instant.now().toEpochMilli());
 
-        // Fix SpawnY
-        if (data.contains("SpawnY")) {
-            int y = data.getInt("SpawnY");
-            if (y == 32767) {
-                data.put("SpawnY", -1);
+        // Put the spawn on ground which was actually measured. This has to happen before the fallback below, which
+        // only fixes a position that was never set in the first place.
+        if (!applyMeasuredSpawn(data)) {
+            // Fix SpawnY
+            if (data.contains("SpawnY")) {
+                int y = data.getInt("SpawnY");
+                if (y == 32767) {
+                    data.put("SpawnY", -1);
+                }
             }
         }
 
@@ -491,6 +498,49 @@ public class JavaLevelWriter implements LevelWriter, JavaReaderWriter {
                 data.put("GameType", 3);
             }
         }
+    }
+
+    /**
+     * Place the spawn on ground measured during the survey, if the position already present cannot be used.
+     * <p>
+     * Modern worlds keep their spawn well below the target format's floor - Y=-60 in a world that reaches down to
+     * Y=-64 - and a server told to start a player there reports "safe spawn not found" and refuses the world. The
+     * survey measures the surface while it is already reading every column, so the answer is known before the level
+     * is written.
+     *
+     * @param data the level.dat root being written.
+     * @return true if a measured spawn was applied, false if the existing value should be left alone.
+     */
+    private boolean applyMeasuredSpawn(CompoundTag data) {
+        if (!(converter instanceof WorldConverter worldConverter)) return false;
+
+        SurveyResult survey = worldConverter.getSurveyResult();
+        if (survey == null || survey.spawnPoint() == null) return false;
+
+        // 1.18 and later stretch from Y=-64 to Y=319; anything older uses the classic 0 to 255.
+        boolean modernRange = version.isGreaterThanOrEqual(1, 18, 0);
+        int minY = modernRange ? -63 : 1;
+        int maxY = modernRange ? 319 : 254;
+
+        // The measurement is in source co-ordinates, so it only lines up with the written world once the same shift
+        // the columns get is applied to it. That shift only happens when the world actually needs moving - a world
+        // already inside the target's range keeps its own co-ordinates, and adding anything to the spawn would drop
+        // the player somewhere they never measured.
+        boolean shifted = worldConverter.shouldShiftToFit() && survey.requiresShift();
+        int shiftY = shifted ? survey.shiftY() : 0;
+
+        // A spawn which already points somewhere addressable is left as it is: it may be a spot the author chose on
+        // purpose, and unlike the measured one it is somewhere a player knows to expect.
+        if (!shifted) {
+            int existing = data.contains("SpawnY") ? data.getInt("SpawnY") : Integer.MIN_VALUE;
+            if (existing >= minY && existing <= maxY) return false;
+        }
+
+        SpawnPoint spawn = survey.spawnPoint();
+        data.put("SpawnX", spawn.x());
+        data.put("SpawnY", Math.max(minY, Math.min(maxY, spawn.y() + shiftY)));
+        data.put("SpawnZ", spawn.z());
+        return true;
     }
 
     @Override

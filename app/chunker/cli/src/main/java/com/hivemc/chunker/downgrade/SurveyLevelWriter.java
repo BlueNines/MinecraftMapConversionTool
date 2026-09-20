@@ -9,9 +9,11 @@ import com.hivemc.chunker.conversion.intermediate.column.ChunkerColumn;
 import com.hivemc.chunker.conversion.intermediate.column.biome.ChunkerBiome;
 import com.hivemc.chunker.conversion.intermediate.column.blockentity.BlockEntity;
 import com.hivemc.chunker.conversion.intermediate.column.chunk.ChunkerChunk;
+import com.hivemc.chunker.conversion.intermediate.column.chunk.identifier.ChunkerBlockIdentifier;
 import com.hivemc.chunker.conversion.intermediate.column.entity.Entity;
 import com.hivemc.chunker.conversion.intermediate.level.ChunkerLevel;
 import com.hivemc.chunker.conversion.intermediate.world.ChunkerWorld;
+import it.unimi.dsi.fastutil.Pair;
 
 import java.util.Set;
 
@@ -78,7 +80,11 @@ public class SurveyLevelWriter implements LevelWriter {
 
         @Override
         public ColumnWriter writeWorld(ChunkerWorld chunkerWorld) {
-            return new SurveyColumnWriter(survey, countBlocks);
+            // Only the overworld counts when working out where a player should arrive: it is the dimension they are
+            // placed in, and folding the nether's bedrock ceiling into the same tally would drag the answer
+            // somewhere no player can stand.
+            boolean overworld = "minecraft:overworld".equals(chunkerWorld.getDimension().getIdentifier());
+            return new SurveyColumnWriter(survey, countBlocks, overworld);
         }
     }
 
@@ -86,12 +92,21 @@ public class SurveyLevelWriter implements LevelWriter {
      * A column writer which records the vertical extent of every column it is handed.
      */
     private static class SurveyColumnWriter implements ColumnWriter {
+        /**
+         * How far apart the ground samples are taken, in blocks. Sampling every block would multiply the cost of the
+         * pass by two hundred and fifty-six for no better answer: ground a player can stand on comes in surfaces
+         * much wider than a few blocks.
+         */
+        private static final int GROUND_SAMPLE_STEP = 4;
+
         private final BlockSurvey survey;
         private final boolean countBlocks;
+        private final boolean overworld;
 
-        SurveyColumnWriter(BlockSurvey survey, boolean countBlocks) {
+        SurveyColumnWriter(BlockSurvey survey, boolean countBlocks, boolean overworld) {
             this.survey = survey;
             this.countBlocks = countBlocks;
+            this.overworld = overworld;
         }
 
         @Override
@@ -102,11 +117,37 @@ public class SurveyLevelWriter implements LevelWriter {
                     survey.observeBlocks(chunk.getPalette());
                 }
             }
+            if (overworld) observeGround(column);
             for (BlockEntity blockEntity : column.getBlockEntities()) {
                 survey.observeBlockEntityY(blockEntity.getY());
             }
             for (Entity entity : column.getEntities()) {
                 survey.observeEntityY(entity.getPositionY());
+            }
+        }
+
+        /**
+         * Record how high the ground sits across this column.
+         * <p>
+         * This is what lets the spawn land on the surface rather than on a rooftop: within a cell the lowest surface
+         * wins, and a square ringed by halls offers its floor while the halls offer their roofs.
+         *
+         * @param column the column to measure.
+         */
+        private void observeGround(ChunkerColumn column) {
+            if (column.getChunks().isEmpty()) return;
+
+            int chunkX = column.getPosition().chunkX();
+            int chunkZ = column.getPosition().chunkZ();
+            int baseX = chunkX * BlockSurvey.SECTION_SIZE;
+            int baseZ = chunkZ * BlockSurvey.SECTION_SIZE;
+
+            for (int x = 0; x < BlockSurvey.SECTION_SIZE; x += GROUND_SAMPLE_STEP) {
+                for (int z = 0; z < BlockSurvey.SECTION_SIZE; z += GROUND_SAMPLE_STEP) {
+                    Pair<Integer, ChunkerBlockIdentifier> highest = column.getHighestBlock(x, z, identifier -> !identifier.isAir());
+                    if (highest == null) continue;
+                    survey.observeGround(chunkX, chunkZ, baseX + x, baseZ + z, highest.left());
+                }
             }
         }
     }

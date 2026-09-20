@@ -1,15 +1,19 @@
 package com.hivemc.chunker.downgrade;
 
+import org.jetbrains.annotations.Nullable;
+
 /**
  * The outcome of a survey pass: how far the world has to move, and what that move costs.
  *
- * @param lowestBlockY        the lowest block Y found in the source world.
- * @param lowestSectionY      the lowest section index found (which may be lower still in empty space).
- * @param highestSectionY     the highest section index found.
- * @param nonEmptySections    how many sections actually held blocks.
- * @param shiftY              how far every Y co-ordinate is moved. Always a whole number of sections.
- * @param clippedSections     how many sections the shift pushes past the output ceiling.
- * @param clipped             whether anything is lost to the ceiling at all.
+ * @param lowestBlockY     the lowest block Y found in the source world.
+ * @param lowestSectionY   the lowest section index found (which may be lower still in empty space).
+ * @param highestSectionY  the highest section index found.
+ * @param nonEmptySections how many sections actually held blocks.
+ * @param shiftY           how far every Y co-ordinate is moved. Always a whole number of sections.
+ * @param clippedSections  how many sections the shift pushes past the output ceiling.
+ * @param clipped          whether anything is lost to the ceiling at all.
+ * @param spawnPoint       where a player should arrive, measured in the source world's co-ordinates (so without any
+ *                         shift applied), or null if the world held no ground to stand on.
  */
 public record SurveyResult(
         int lowestBlockY,
@@ -18,7 +22,8 @@ public record SurveyResult(
         int nonEmptySections,
         int shiftY,
         int clippedSections,
-        boolean clipped
+        boolean clipped,
+        @Nullable SpawnPoint spawnPoint
 ) {
     /**
      * Whether a shift is actually required.
