@@ -37,6 +37,10 @@ import java.util.concurrent.atomic.AtomicReference;
  * dependency tree to resolve, which matters for something meant to be opened and used rather than deployed.
  */
 public class LocalApp {
+    /** 未传模式的旧客户端保持降级行为。 */
+    private static boolean isLossless(JsonObject request) {
+        return request.has("mode") && "lossless".equals(request.get("mode").getAsString());
+    }
     private static final Gson GSON = new Gson();
 
     private final Path toolDirectory;
@@ -467,7 +471,7 @@ public class LocalApp {
         // that is part of the path, so it is stripped before use rather than being reported as "not a world".
         String outputText = request.has("output") ? cleanPath(request.get("output").getAsString()) : "";
         Path output = outputText.isEmpty()
-                ? toolDirectory.resolve("converted").resolve(input.getFileName().toString() + "_1.12.2")
+                ? toolDirectory.resolve("converted").resolve(input.getFileName().toString() + (isLossless(request) ? "_lossless_1.12.2" : "_1.12.2"))
                 : Path.of(outputText);
         output = output.toAbsolutePath().normalize();
 
@@ -504,7 +508,7 @@ public class LocalApp {
                 : null;
         boolean approximate = !request.has("approximate") || request.get("approximate").getAsBoolean();
 
-        ConversionJob newJob = new ConversionJob(input, output, output, shiftToFit, clearContainers, mappings, approximate);
+        ConversionJob newJob = new ConversionJob(input, output, output, shiftToFit, clearContainers, mappings, approximate, isLossless(request));
         newJob.prepareWith(preparedWorlds);
         previews.prepareConversion(input, output);
         job.set(newJob);
@@ -788,7 +792,7 @@ public class LocalApp {
             removeTree(scratch);
             Files.createDirectories(scratch);
 
-            ConversionJob analysis = new ConversionJob(input, scratch, scratch, true, true, mappings, approximate);
+            ConversionJob analysis = new ConversionJob(input, scratch, scratch, true, true, mappings, approximate, isLossless(request));
             analysis.prepareWith(preparedWorlds);
             analysis.run();
             if (analysis.isFailed()) {

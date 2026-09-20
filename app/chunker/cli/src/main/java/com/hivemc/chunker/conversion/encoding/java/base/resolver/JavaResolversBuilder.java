@@ -285,9 +285,7 @@ public class JavaResolversBuilder {
                     );
                 }
 
-                return blockIdentifierResolver.from(chunkerBlockIdentifier)
-                        .flatMap(identifier -> blockIDResolver.from(identifier.getIdentifier())
-                                .map(id -> new LegacyIdentifier(id, (byte) identifier.getDataValue().orElse(0))))
+                return resolveLegacyBlockIdentifier(chunkerBlockIdentifier)
                         .orElseGet(() -> {
                             // Report the error
                             converter.logMissingMapping(Converter.MissingMappingType.BLOCK, String.valueOf(chunkerBlockIdentifier));
@@ -302,6 +300,12 @@ public class JavaResolversBuilder {
                             // Return air
                             return new LegacyIdentifier(0, (byte) 0);
                         });
+            }
+
+            /** 与正式编码共用映射，但不提前记录损失或替换。 */
+            @Override public Optional<LegacyIdentifier> resolveLegacyBlockIdentifier(ChunkerBlockIdentifier identifier) {
+                return blockIdentifierResolver.from(identifier).flatMap(value -> blockIDResolver.from(value.getIdentifier())
+                        .map(id -> new LegacyIdentifier(id, (byte) value.getDataValue().orElse(0))));
             }
 
             @Override

@@ -139,7 +139,18 @@ public class JavaChunkWriter {
 
                 // Get key + value
                 ChunkerBlockIdentifier identifier = chunk.getPalette().get(x, y, z, ChunkerBlockIdentifier.AIR);
-                LegacyIdentifier legacyIdentifier = resolvers.writeLegacyBlockIdentifier(identifier);
+                java.util.Optional<LegacyIdentifier> handled = java.util.Optional.empty();
+                // 无损扩展只挂在实际旧版写入路径，分析用临时试转也走同一个入口。
+                if (converter instanceof com.hivemc.chunker.conversion.WorldConverter worldConverter) {
+                    var lossless = worldConverter.getLosslessBlocks();
+                    if (lossless != null && lossless.needsHandling(identifier,
+                            resolvers.resolveLegacyBlockIdentifier(identifier).orElse(new LegacyIdentifier(0, (byte)0)))) {
+                        handled = lossless.handle(new com.hivemc.chunker.downgrade.LosslessBlockHandler.Block(
+                                identifier, dimension, chunkerColumn.getPosition().chunkX() * 16 + x,
+                                chunk.getY() * 16 + y, chunkerColumn.getPosition().chunkZ() * 16 + z));
+                    }
+                }
+                LegacyIdentifier legacyIdentifier = handled.isPresent() ? handled.get() : resolvers.writeLegacyBlockIdentifier(identifier);
 
                 // Set block id
                 byte blockValue = (byte) (legacyIdentifier.id() & 0xFF);

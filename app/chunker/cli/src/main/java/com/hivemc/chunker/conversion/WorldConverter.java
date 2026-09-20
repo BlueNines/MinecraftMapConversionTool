@@ -128,6 +128,13 @@ public class WorldConverter implements Converter {
     private final ConcurrentHashMap<String, LongAdder> substitutions = new ConcurrentHashMap<>();
     @Nullable
     private MappingsFileResolvers blockMappings;
+    private com.hivemc.chunker.downgrade.LosslessBlocks losslessBlocks;
+
+    /** 为当前任务接入无损方块处理器；默认 null 保持降级模式行为。 */
+    public void setLosslessBlocks(com.hivemc.chunker.downgrade.LosslessBlocks blocks) { this.losslessBlocks = blocks; }
+
+    /** 旧版写入器与报告共用当前任务的处理入口。 */
+    public com.hivemc.chunker.downgrade.LosslessBlocks getLosslessBlocks() { return losslessBlocks; }
     private boolean levelDBCompaction = true;
     private boolean processMaps = true;
     private boolean processItems = true;

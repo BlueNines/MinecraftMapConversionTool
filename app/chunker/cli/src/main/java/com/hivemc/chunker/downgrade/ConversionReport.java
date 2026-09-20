@@ -45,6 +45,8 @@ public final class ConversionReport {
      */
     public static JsonObject build(WorldConverter converter, LevelReader reader, LevelWriter writer) {
         JsonObject report = new JsonObject();
+        report.addProperty("mode", converter.getLosslessBlocks() == null ? "downgrade" : "lossless");
+        if (converter.getLosslessBlocks() != null) report.add("lossless", converter.getLosslessBlocks().report());
 
         // What was converted into what.
         JsonObject versions = new JsonObject();
@@ -302,6 +304,9 @@ public final class ConversionReport {
      */
     public static String summary(JsonObject report) {
         StringBuilder builder = new StringBuilder();
+        if (report.has("lossless")) builder.append("无损转换（接口占位阶段）：待处理 ")
+                .append(report.getAsJsonObject("lossless").get("pendingBlocks").getAsLong())
+                .append(" 个方块；详情见 conversion-report.json 的 lossless.pending。尚未接入的方块不保证保留。\n");
         JsonObject versions = report.getAsJsonObject("versions");
         builder.append("Conversion report").append(System.lineSeparator());
         builder.append("  Source: ").append(versions.get("sourceFormat").getAsString())

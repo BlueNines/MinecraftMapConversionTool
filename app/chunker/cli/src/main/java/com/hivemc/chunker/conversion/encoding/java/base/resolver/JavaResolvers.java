@@ -170,6 +170,9 @@ public interface JavaResolvers {
      */
     LegacyIdentifier writeLegacyBlockIdentifier(ChunkerBlockIdentifier identifier);
 
+    /** 无副作用地探测旧版编码，让无损处理器在缺失统计之前接管。 */
+    Optional<LegacyIdentifier> resolveLegacyBlockIdentifier(ChunkerBlockIdentifier identifier);
+
     /**
      * Get the data version being used.
      *

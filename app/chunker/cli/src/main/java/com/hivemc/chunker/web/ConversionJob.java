@@ -46,6 +46,13 @@ public class ConversionJob {
     private final boolean clearContainers;
     private final String mappingsJson;
     private final boolean approximate;
+    private final boolean lossless;
+    private com.hivemc.chunker.downgrade.LosslessBlockHandler losslessHandler = block -> Optional.empty();
+
+    /** 后续处理方在 run 前注入线程安全实现，分析与正式转换均复用此任务入口。 */
+    public void setLosslessHandler(com.hivemc.chunker.downgrade.LosslessBlockHandler handler) {
+        this.losslessHandler = java.util.Objects.requireNonNull(handler);
+    }
     private PreparedWorlds preparedWorlds;
 
     /** 与源预览共享内容索引；必须在提交后台任务前设置。 */
@@ -71,6 +78,11 @@ public class ConversionJob {
      *                        there, instead of dropping them.
      */
     public ConversionJob(Path input, Path output, Path reportDirectory, boolean shiftToFit, boolean clearContainers, String mappingsJson, boolean approximate) {
+        this(input, output, reportDirectory, shiftToFit, clearContainers, mappingsJson, approximate, false);
+    }
+
+    /** 两种模式共用同一任务；无损模式关闭内置替换，用户规则始终保留。 */
+    public ConversionJob(Path input, Path output, Path reportDirectory, boolean shiftToFit, boolean clearContainers, String mappingsJson, boolean approximate, boolean lossless) {
         this.input = input;
         this.output = output;
         this.reportDirectory = reportDirectory;
@@ -78,6 +90,7 @@ public class ConversionJob {
         this.clearContainers = clearContainers;
         this.mappingsJson = mappingsJson;
         this.approximate = approximate;
+        this.lossless = lossless;
     }
 
     /**
@@ -96,12 +109,13 @@ public class ConversionJob {
             converter.setSkipNewEmptyColumns(prepared != null);
             converter.setShiftToFit(shiftToFit);
             converter.setClearContainers(clearContainers);
+            if (lossless) converter.setLosslessBlocks(new com.hivemc.chunker.downgrade.LosslessBlocks(losslessHandler));
 
             // The built-in approximations are always applied, with the user's own mappings taking precedence. Without
             // them whole categories of block - every wall, every non-oak trapdoor, every stripped log - are written
             // as air, which is the difference between a build and a colander.
             converter.setBlockMappings(new MappingsFileResolvers(MappingsFile.load(
-                    approximate ? Approximations.merge(mappingsJson) : Approximations.userOnly(mappingsJson)
+                    approximate && !lossless ? Approximations.merge(mappingsJson) : Approximations.userOnly(mappingsJson)
             )));
 
             Optional<? extends LevelReader> reader = EncodingType.findReader((prepared == null ? input : prepared.directory()).toFile(), converter);
