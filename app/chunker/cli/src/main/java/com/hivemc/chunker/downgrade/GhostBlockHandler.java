@@ -78,6 +78,10 @@ public final class GhostBlockHandler implements LosslessBlockHandler {
     /** 回落到同方块其它状态的次数（目标版本里没有这个状态）。 */
     private final java.util.concurrent.atomic.LongAdder fallbackHits = new java.util.concurrent.atomic.LongAdder();
 
+    /** 首次遇到「属性对不上」时打一条日志，避免刷屏。 */
+    private final java.util.concurrent.atomic.AtomicBoolean missingPropertyLogged =
+            new java.util.concurrent.atomic.AtomicBoolean();
+
     /** 首次回落时打一条示例，避免刷屏（这种情形很少，但用户应该知道）。 */
     private final java.util.concurrent.atomic.AtomicBoolean fallbackLogged =
             new java.util.concurrent.atomic.AtomicBoolean();
@@ -168,6 +172,19 @@ public final class GhostBlockHandler implements LosslessBlockHandler {
         if (states == null) return Optional.empty();
 
         String signature = buildSignature(identifier, states.attributes());
+        // buildSignature 的契约是「有属性取不到值就返回 null」——意为这个方块有幽灵表里的
+        // 属性而 Chunker 侧根本没有它（两边名字对不上，或表里引用了新属性而这里没同步）。
+        // 此时必须真的不接管：不能把 null 当 key 用，因为 HashMap.get(null) 不报错、
+        // 会直接落入回落分支，而 parseSignature(null) 返回空 map 会让所有候选并列零分，
+        // 最终写下一个纯由字典序决定、与源方块毫无关系的状态，且不报错。
+        if (signature == null) {
+            if (missingPropertyLogged.compareAndSet(false, true)) {
+                System.out.println("[幽灵方块] 状态属性与幽灵表对不上（" + nativeName(identifier)
+                        + " 缺 " + missingProperties(identifier, states.attributes())
+                        + "），已放弃接管并回落原生编码。幽灵表与本地属性名可能需要同步。");
+            }
+            return Optional.empty();
+        }
         Integer rawId = states.bySignature().get(signature);
         if (rawId != null) {
             exactHits.increment();
@@ -199,6 +216,28 @@ public final class GhostBlockHandler implements LosslessBlockHandler {
         if (name.startsWith("minecraft:")) name = name.substring("minecraft:".length());
         String alias = BLOCK_ALIASES.get(name);
         return alias != null ? alias : name;
+    }
+
+    /**
+     * 列出幽灵表需要、而当前方块取不到值的属性名（拼日志用）。
+     *
+     * @param identifier 方块
+     * @param expected   幽灵表里该方块用到的属性名
+     * @return 逗号分隔的属性名，取不到任何属性时返回「（全部）」
+     */
+    private static String missingProperties(final ChunkerBlockIdentifier identifier, final Set<String> expected) {
+        final StringBuilder builder = new StringBuilder();
+        for (final BlockState<?> state : identifier.getType().getStates()) {
+            final String chunkerName = state.getName();
+            if (INTERNAL_STATES.contains(chunkerName)) continue;
+            final String tableName = STATE_ALIASES.getOrDefault(chunkerName, chunkerName);
+            if (!expected.contains(tableName)) continue;
+            if (stateValue(identifier, state) == null) {
+                if (!builder.isEmpty()) builder.append(", ");
+                builder.append(tableName);
+            }
+        }
+        return builder.isEmpty() ? "（无）" : builder.toString();
     }
 
     /**
@@ -268,8 +307,11 @@ public final class GhostBlockHandler implements LosslessBlockHandler {
         /**
          * 在已知签名里找与 {@code requested} 最接近的一条，返回它的 raw id。
          * <p>
-         * 逐个属性比对，取「取值相同个数最多」的那条；平局取签名字典序更小的，
-         * 保证同一输入永远得到同一结果（转换结果可复现）。
+         * 评分是「属性取值相同的个数」。注意这并不等价于「接近」：对于枚举/数值型属性
+         * （如 {@code level}、{@code layer}），取值是否相等是直相干的，而取值本身有大小关系。
+         * 所以平局时不能拿签名字典序当决胜者——那会把 {@code level=6} 回落到 {@code level=1}
+         * （两者差最远，但 1 的字典序最小）。改为比较【属性值的序数距离】，
+         * 让 {@code level=4/6} 能落到 {@code level=3}。
          * <p>
          * <b>为什么不能直接用「raw id 最小的那条」。</b>
          * 生成器按目标状态 id 升序分配编号，而 bool 的下标 0 表示 true
@@ -281,6 +323,7 @@ public final class GhostBlockHandler implements LosslessBlockHandler {
             final Map<String, String> want = parseSignature(requested);
             Integer bestRaw = null;
             int bestScore = -1;
+            long bestDistance = Long.MAX_VALUE;
             String bestSig = null;
             for (final Map.Entry<String, Integer> entry : bySignature.entrySet()) {
                 final String candidate = entry.getKey();
@@ -292,14 +335,52 @@ public final class GhostBlockHandler implements LosslessBlockHandler {
                         score++;
                     }
                 }
-                if (score > bestScore || (score == bestScore && bestSig != null
-                        && candidate.compareTo(bestSig) < 0)) {
+                // 同分时比“取值差多少”而不是签名的字典序。
+                final long distance = valueDistance(want, have);
+                final boolean better = score > bestScore
+                        || (score == bestScore && distance < bestDistance)
+                        // 距离也一样时把签名当稳定的平局决胜者，保证同一输入得到同一结果
+                        || (score == bestScore && distance == bestDistance && bestSig != null
+                            && candidate.compareTo(bestSig) < 0);
+                if (bestSig == null || better) {
                     bestScore = score;
+                    bestDistance = distance;
                     bestRaw = entry.getValue();
                     bestSig = candidate;
                 }
             }
             return bestRaw;
+        }
+
+        /**
+         * 两个签名的“取值距离”总和：数值属性按绝对差相加，非数值属性不同则计一分。
+         *
+         * <p>只作平局决胜用，不影响安全性；取不到对应属性（两边属性集不一致）时不计入。</p>
+         *
+         * @param want 源状态
+         * @param have 候选状态
+         * @return 距离总和，越小越接近
+         */
+        private static long valueDistance(final Map<String, String> want, final Map<String, String> have) {
+            long total = 0;
+            for (final Map.Entry<String, String> w : want.entrySet()) {
+                final String v = have.get(w.getKey());
+                if (v == null) continue; // 一边没有这个属性：与评分保持一致，不参与
+                if (v.equals(w.getValue())) continue;
+                final Long left = asNumber(w.getValue());
+                final Long right = asNumber(v);
+                total += (left != null && right != null) ? Math.abs(left - right) : 1L;
+            }
+            return total;
+        }
+
+        /** 把属性值当整数读，读不出来返回 null。 */
+        private static Long asNumber(final String text) {
+            try {
+                return Long.valueOf(text);
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
         }
     }
 
