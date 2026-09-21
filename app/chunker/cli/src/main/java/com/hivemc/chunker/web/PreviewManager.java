@@ -95,6 +95,15 @@ public final class PreviewManager implements AutoCloseable {
         awaitingResult = true;
     }
 
+    /**
+     * 无损模式不需要转换结果预览：丢弃结果侧、只留源预览，省掉一次完整渲染与一个常驻进程。
+     * 需要时仍可照常启动结果侧。
+     */
+    public synchronized void discardResult() {
+        cancel(after);
+        awaitingResult = false;
+    }
+
     /** Only a successful conversion may call this. A manual refresh restarts the result, not the source. */
     public synchronized boolean result(Path source, Path output, boolean force) {
         source = source.toAbsolutePath().normalize();

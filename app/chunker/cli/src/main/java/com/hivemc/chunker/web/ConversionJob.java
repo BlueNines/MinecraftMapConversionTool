@@ -272,6 +272,15 @@ public class ConversionJob {
     }
 
     /**
+     * 本次任务是否为无损模式（目标版本装不下的方块保持原样，而不是替换成近似方块）。
+     *
+     * @return true 表示无损模式。
+     */
+    public boolean isLossless() {
+        return lossless;
+    }
+
+    /**
      * Whether the job has stopped, successfully or not.
      *
      * @return true if the job is no longer running.

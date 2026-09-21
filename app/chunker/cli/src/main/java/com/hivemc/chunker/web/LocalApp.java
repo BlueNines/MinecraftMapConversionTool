@@ -508,9 +508,17 @@ public class LocalApp {
                 : null;
         boolean approximate = !request.has("approximate") || request.get("approximate").getAsBoolean();
 
-        ConversionJob newJob = new ConversionJob(input, output, output, shiftToFit, clearContainers, mappings, approximate, isLossless(request));
+        boolean lossless = isLossless(request);
+        ConversionJob newJob = new ConversionJob(input, output, output, shiftToFit, clearContainers, mappings, approximate, lossless);
         newJob.prepareWith(preparedWorlds);
-        previews.prepareConversion(input, output);
+        // 无损模式只保留源地图预览：结果世界里的幽灵方块在 1.12.2 BlueMap 里没有对应外观，
+        // 渲染出来只会误导，所以不启动结果侧，也省掉一次完整渲染与一个常驻进程。
+        if (lossless) {
+            previews.source(input);
+            previews.discardResult();
+        } else {
+            previews.prepareConversion(input, output);
+        }
         job.set(newJob);
 
         // 输出完全写入后才开始一次增量渲染；保留 HTTP 服务，不让后台 watcher 边写边读。
@@ -520,6 +528,8 @@ public class LocalApp {
         Path sourceWorld = input;
         Thread worker = new Thread(() -> {
             newJob.run();
+            // 无损模式没有结果预览，转换完成后什么都不用发起。
+            if (lossless) return;
             if (newJob.isFinished() && !newJob.isFailed()) {
                 try {
                     // PreviewManager 在渲染成功后才发布新版本，前端随后等待全部可见瓦片加载完成。
@@ -619,6 +629,8 @@ public class LocalApp {
         JsonObject response = new JsonObject();
         try {
             ConversionJob current = job.get();
+            if (current != null && current.isLossless())
+                throw new IOException("无损模式只保留源地图预览，不生成转换结果预览。");
             Path source = lastSourceWorld.get(), result = lastResultWorld.get();
             if (source == null || result == null || current == null || !current.isFinished() || current.isFailed())
                 throw new IOException("还没有成功转换的结果可供预览。");
@@ -661,6 +673,9 @@ public class LocalApp {
     }
 
     private void addPreviewStatus(JsonObject response) {
+        ConversionJob current = job.get();
+        // 无损模式不生成结果预览，前端据此隐藏「转换结果」一侧。
+        response.addProperty("lossless", current != null && current.isLossless());
         PreviewManager.Snapshot source = previews.before(), result = previews.after();
         response.addProperty("sourceWorld", source.world());
         response.addProperty("sourceRenderStatus", source.status());
