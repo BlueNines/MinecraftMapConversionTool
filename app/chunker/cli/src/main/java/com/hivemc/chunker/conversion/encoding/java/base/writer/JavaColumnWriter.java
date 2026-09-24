@@ -28,6 +28,7 @@ import com.hivemc.chunker.scheduling.task.FutureTask;
 import com.hivemc.chunker.scheduling.task.Task;
 import com.hivemc.chunker.scheduling.task.TaskWeight;
 import com.hivemc.chunker.util.BlockPosition;
+import it.unimi.dsi.fastutil.Pair;
 import it.unimi.dsi.fastutil.bytes.Byte2ObjectMap;
 import it.unimi.dsi.fastutil.bytes.Byte2ObjectOpenHashMap;
 import org.jetbrains.annotations.Nullable;
@@ -191,8 +192,11 @@ public class JavaColumnWriter implements ColumnWriter {
     protected TagWithName<?> writeBiomes(ChunkerColumn column) {
         if (column.getBiomes() == null) return null; // Skip if not present
 
-        // Written as columns
-        ChunkerBiome[] columnBiomes = column.getBiomes().asColumn(resolvers.getFallbackBiome(dimension));
+        // Written as columns, sampling each column at its surface. 3D biomes span many sections and
+        // the lowest one is not the terrain: a world floating in the void would otherwise be written
+        // entirely as the void biome.
+        ChunkerBiome[] columnBiomes = column.getBiomes().asColumn(
+                resolvers.getFallbackBiome(dimension), surfaceHeights(column));
 
         // Loop through each biome and convert it to a byte
         byte[] biomes = new byte[columnBiomes.length];
@@ -201,6 +205,22 @@ public class JavaColumnWriter implements ColumnWriter {
         }
 
         return new TagWithName<>("Biomes", new ByteArrayTag(biomes));
+    }
+
+    /**
+     * 逐列找出地表方块的 Y，下标为 {@code (z << 4) | x}；该列没有方块时用 {@link Integer#MIN_VALUE}。
+     *
+     * <p>用于把 3D 群系折叠成一层时确定取样位置。</p>
+     */
+    private static int[] surfaceHeights(ChunkerColumn column) {
+        int[] heights = new int[256];
+        for (int x = 0; x < 16; x++) {
+            for (int z = 0; z < 16; z++) {
+                Pair<Integer, ChunkerBlockIdentifier> highest = column.getHighestBlock(x, z, id -> !id.isAir());
+                heights[(z << 4) | x] = highest == null ? Integer.MIN_VALUE : highest.left();
+            }
+        }
+        return heights;
     }
 
     /**

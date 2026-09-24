@@ -14,13 +14,28 @@ import java.util.function.Function;
 public class ChunkerClusterPaletteBasedBiomes implements ChunkerBiomes {
     private final List<Palette<ChunkerBiome>> chunks;
 
+    /** 每个 palette 对应的 section Y；不知道时为 null（退回“取最低 section”的旧行为）。 */
+    private final int[] sectionYs;
+
     /**
      * Create a new set of biomes based on a clustered palette per chunk.
      *
      * @param chunks the biomes with a 4x4x4 palette per chunk.
      */
     public ChunkerClusterPaletteBasedBiomes(List<Palette<ChunkerBiome>> chunks) {
+        this(chunks, null);
+    }
+
+    /**
+     * Create a new set of biomes based on a clustered palette per chunk, keeping track of which section each
+     * palette belongs to so a column can be sampled at its surface.
+     *
+     * @param chunks    the biomes with a 4x4x4 palette per chunk.
+     * @param sectionYs the section Y for each palette, in the same order as chunks.
+     */
+    public ChunkerClusterPaletteBasedBiomes(List<Palette<ChunkerBiome>> chunks, int[] sectionYs) {
         this.chunks = chunks;
+        this.sectionYs = sectionYs;
     }
 
     @Override
@@ -50,6 +65,48 @@ public class ChunkerClusterPaletteBasedBiomes implements ChunkerBiomes {
         }
 
         return output;
+    }
+
+    @Override
+    public ChunkerBiome[] asColumn(ChunkerBiome fallbackBiome, int[] surfaceHeights) {
+        // 没有 section Y 或地表信息时，保持旧行为（取最低的 section）。
+        if (sectionYs == null || surfaceHeights == null || chunks.isEmpty()) {
+            return asColumn(fallbackBiome);
+        }
+
+        ChunkerBiome[] output = new ChunkerBiome[256];
+        for (int i = 0; i < output.length; i++) {
+            int x = i & 0xF;
+            int z = (i >> 4) & 0xF;
+            int surfaceY = surfaceHeights[i];
+            if (surfaceY == Integer.MIN_VALUE) {
+                // 这一列完全没有方块，用 fallback。
+                output[i] = fallbackBiome;
+                continue;
+            }
+
+            // 找到地表所在 section 对应的 palette。
+            int paletteIndex = -1;
+            for (int c = 0; c < sectionYs.length && c < chunks.size(); c++) {
+                if (sectionYs[c] == (surfaceY >> 4)) {
+                    paletteIndex = c;
+                    break;
+                }
+            }
+            output[i] = paletteIndex < 0
+                    ? fallbackBiome
+                    : chunks.get(paletteIndex).get(x >> 2, 0, z >> 2, fallbackBiome);
+        }
+        return output;
+    }
+
+    @Override
+    public void shiftSections(int shiftSections) {
+        if (sectionYs == null || shiftSections == 0) return;
+        // 群系不是按方块位置存的，搬动不能靠重标 section key，只能把记下的层号一起改。
+        for (int i = 0; i < sectionYs.length; i++) {
+            sectionYs[i] += shiftSections;
+        }
     }
 
     @Override

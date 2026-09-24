@@ -34,10 +34,13 @@ public class ColumnReader extends com.hivemc.chunker.conversion.encoding.java.v1
         ListTag<CompoundTag, Map<String, Tag<?>>> sections = columnNBT.getList("sections", CompoundTag.class, null);
         if (sections != null) {
             List<Palette<ChunkerBiome>> chunks = new ArrayList<>(sections.size());
+            // 与 chunks 一一对应，记下每个 palette 属于哪个 section，供按地表取样时定位。
+            int[] sectionYs = new int[sections.size()];
 
             // Attempt to loop through each chunk
             for (CompoundTag section : sections) {
                 try {
+                    sectionYs[chunks.size()] = section.getByte("Y", (byte) 0);
                     section = section.getCompound("biomes", section); // 1.18 nests the palette
 
                     long[] values = section.getLongArray("data", null);
@@ -76,7 +79,7 @@ public class ColumnReader extends com.hivemc.chunker.conversion.encoding.java.v1
             }
 
             // Add to biomes
-            column.setBiomes(new ChunkerClusterPaletteBasedBiomes(chunks));
+            column.setBiomes(new ChunkerClusterPaletteBasedBiomes(chunks, sectionYs));
             return;
         }
 

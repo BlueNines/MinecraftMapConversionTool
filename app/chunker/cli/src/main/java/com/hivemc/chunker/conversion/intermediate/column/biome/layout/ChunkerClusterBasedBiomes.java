@@ -46,6 +46,33 @@ public class ChunkerClusterBasedBiomes implements ChunkerBiomes {
     }
 
     @Override
+    public ChunkerBiome[] asColumn(ChunkerBiome fallbackBiome, int[] surfaceHeights) {
+        if (surfaceHeights == null) {
+            return asColumn(fallbackBiome);
+        }
+
+        // 这个实现固定保留 16 个 chunkY（见 as4X4Palette 的排布），所以地表高度要夹到该范围。
+        ChunkerBiome[] output = new ChunkerBiome[256];
+        for (int i = 0; i < output.length; i++) {
+            int x = i & 0xF;
+            int z = (i >> 4) & 0xF;
+            int surfaceY = surfaceHeights[i];
+            if (surfaceY == Integer.MIN_VALUE) {
+                output[i] = fallbackBiome;
+                continue;
+            }
+
+            int chunkY = surfaceY >> 4;
+            if (chunkY < 0) chunkY = 0;
+            if (chunkY > 15) chunkY = 15;
+
+            // clusterY = 0，与 asColumn(fallbackBiome) 的取样层一致，只是换了 chunkY。
+            output[i] = clusters[chunkY << 6 | (z >> 2) << 2 | (x >> 2)];
+        }
+        return output;
+    }
+
+    @Override
     public ChunkerBiome[] as4X4(ChunkerBiome fallbackBiome) {
         return clusters;
     }

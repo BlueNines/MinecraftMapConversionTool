@@ -2,6 +2,7 @@ package com.hivemc.chunker.downgrade;
 
 import com.hivemc.chunker.conversion.handlers.ColumnConversionHandler;
 import com.hivemc.chunker.conversion.intermediate.column.ChunkerColumn;
+import com.hivemc.chunker.conversion.intermediate.column.biome.layout.ChunkerBiomes;
 import com.hivemc.chunker.conversion.intermediate.column.blockentity.BlockEntity;
 import com.hivemc.chunker.conversion.intermediate.column.chunk.ChunkerChunk;
 import com.hivemc.chunker.conversion.intermediate.column.chunk.RegionCoordPair;
@@ -109,6 +110,11 @@ public class ShiftColumnHandler implements ColumnConversionHandler {
         for (ChunkerChunk chunk : surviving) {
             chunks.put(chunk.getY(), chunk);
         }
+
+        // 群系带自己的 section Y（不是从方块推出来的），必须和方块一样整体上移。
+        // 否则写入端按“移位后的地表高度”去匹配群系层，会取到地表上方 shift 层的群系。
+        ChunkerBiomes biomes = column.getBiomes();
+        if (biomes != null) biomes.shiftSections(shiftSections);
 
         // Block entities carry their own absolute co-ordinate.
         column.getBlockEntities().removeIf(blockEntity -> {

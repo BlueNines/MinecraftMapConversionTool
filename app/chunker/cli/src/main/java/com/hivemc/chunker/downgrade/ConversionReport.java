@@ -10,6 +10,8 @@ import com.hivemc.chunker.conversion.encoding.base.Converter;
 import com.hivemc.chunker.conversion.encoding.base.Version;
 import com.hivemc.chunker.conversion.encoding.base.reader.LevelReader;
 import com.hivemc.chunker.conversion.encoding.base.writer.LevelWriter;
+import com.hivemc.chunker.conversion.intermediate.column.biome.ChunkerBiome;
+import com.hivemc.chunker.conversion.intermediate.column.biome.ChunkerCustomBiome;
 import com.hivemc.chunker.conversion.intermediate.column.chunk.identifier.ChunkerBlockIdentifier;
 import com.hivemc.chunker.conversion.intermediate.column.chunk.identifier.type.block.ChunkerCustomBlockType;
 
@@ -20,6 +22,7 @@ import java.nio.file.Files;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Produces the conversion report.
@@ -71,6 +74,11 @@ public final class ConversionReport {
 
         // What was deliberately dropped because the target version has no use for it.
         report.add("removed", buildRemoved(converter));
+
+        // Which biomes the source uses and what each becomes. A biome the target cannot store is replaced without
+        // leaving a trace in the world beyond a different colour of grass, so without this list there is nothing
+        // for the user to base a biome mapping on.
+        report.add("biomes", buildBiomes(converter, writer));
 
         // How much of the map actually had to be rewritten. When the same world is converted into the same folder
         // again after editing one mapping, almost every chunk comes out identical to what is already there and is
@@ -150,6 +158,59 @@ public final class ConversionReport {
                         "the original has no equivalent. Add a mapping to decide what any of them becomes instead."
         );
         return substitutions;
+    }
+
+    /**
+     * 源地图用了哪些群系，以及目标版本能不能直接存下它们。
+     *
+     * <p>目标版本没有的群系会被换成默认群系，产物里只有草地颜色的差别，没有任何一处会写明丢的是什么。
+     * 这份清单既是群系映射编辑器的依据，也是「地图上那片颜色原本是什么」的唯一记录。</p>
+     *
+     * @param converter 执行本次转换的转换器。
+     * @param writer    目标版本的写入器，用它的支持集判断哪些群系装得下。
+     * @return 报告里的 biomes 段。
+     */
+    private static JsonObject buildBiomes(WorldConverter converter, LevelWriter writer) {
+        JsonObject biomes = new JsonObject();
+        JsonArray list = new JsonArray();
+        biomes.add("biomes", list);
+
+        BlockSurvey survey = converter.getCurrentSurvey();
+        if (survey == null) {
+            biomes.addProperty("unsupportedCount", 0);
+            return biomes;
+        }
+
+        Set<ChunkerBiome.ChunkerVanillaBiome> supported = writer.getSupportedBiomes();
+        int unsupported = 0;
+        for (Map.Entry<ChunkerBiome, Long> entry : survey.getBiomeCounts().entrySet()) {
+            ChunkerBiome biome = entry.getKey();
+            // 自定义群系（模组/数据包）在目标版本里必然不存在。
+            ChunkerBiome.ChunkerVanillaBiome vanilla = biome instanceof ChunkerBiome.ChunkerVanillaBiome
+                    ? (ChunkerBiome.ChunkerVanillaBiome) biome : null;
+            boolean supportedHere = vanilla != null && supported.contains(vanilla);
+            if (!supportedHere) unsupported++;
+
+            JsonObject item = new JsonObject();
+            item.addProperty("identifier", biomeIdentifier(biome));
+            item.addProperty("count", entry.getValue());
+            item.addProperty("supported", supportedHere);
+            list.add(item);
+        }
+        biomes.addProperty("unsupportedCount", unsupported);
+        return biomes;
+    }
+
+    /** 群系在报告里的名字，优先用 Java 标识符。 */
+    private static String biomeIdentifier(ChunkerBiome biome) {
+        if (biome instanceof ChunkerBiome.ChunkerVanillaBiome) {
+            ChunkerBiome.ChunkerVanillaBiome vanilla = (ChunkerBiome.ChunkerVanillaBiome) biome;
+            return vanilla.getJavaIdentifier().orElse(vanilla.name());
+        }
+        if (biome instanceof ChunkerCustomBiome) {
+            return ((ChunkerCustomBiome) biome).getIdentifier();
+        }
+        return String.valueOf(biome);
     }
 
     private static JsonObject buildShift(WorldConverter converter) {

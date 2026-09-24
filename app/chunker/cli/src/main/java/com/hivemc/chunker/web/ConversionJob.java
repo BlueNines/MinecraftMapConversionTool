@@ -7,6 +7,8 @@ import com.hivemc.chunker.conversion.encoding.base.Version;
 import com.hivemc.chunker.conversion.encoding.base.reader.LevelReader;
 import com.hivemc.chunker.conversion.encoding.base.writer.LevelWriter;
 import com.hivemc.chunker.conversion.encoding.java.base.writer.IncrementalWriter;
+import com.hivemc.chunker.conversion.intermediate.column.biome.ChunkerBiome;
+import com.hivemc.chunker.conversion.intermediate.column.biome.ChunkerCustomBiome;
 import com.hivemc.chunker.downgrade.Approximations;
 import com.hivemc.chunker.downgrade.ConversionReport;
 import com.hivemc.chunker.downgrade.SurveyResult;
@@ -66,6 +68,41 @@ public class ConversionJob {
     /** 与源预览共享内容索引；必须在提交后台任务前设置。 */
     public void prepareWith(PreparedWorlds preparedWorlds) { this.preparedWorlds = preparedWorlds; }
 
+    /**
+     * 群系映射：源群系标识符 → 目标群系标识符，null/空表示不做映射。
+     *
+     * <p>命令行版早就支持它（{@code --biomeMappings} 或源目录里的 biome_mappings.chunker.json），
+     * 网页路径一直没接，遇到目标版本没有的群系就只能接受降级。</p>
+     */
+    private java.util.Map<String, String> biomeMappings;
+
+    /** 必须在 run 前设置。 */
+    public void setBiomeMappings(java.util.Map<String, String> biomeMappings) { this.biomeMappings = biomeMappings; }
+
+    /** 把「群系标识符 → 群系标识符」解析成 chunker 内部类型。 */
+    private static java.util.Map<ChunkerBiome, ChunkerBiome> parseBiomeMapping(java.util.Map<String, String> raw) {
+        java.util.Map<ChunkerBiome, ChunkerBiome> mapping = new java.util.HashMap<>(raw.size());
+        for (java.util.Map.Entry<String, String> entry : raw.entrySet()) {
+            ChunkerBiome src = resolveBiome(entry.getKey());
+            ChunkerBiome dst = resolveBiome(entry.getValue());
+            // 写错名字时直接抛：静默忽略会让用户以为映射生效了，而群系没变。
+            if (src == null) throw new IllegalArgumentException("未知的源群系：" + entry.getKey());
+            if (dst == null) throw new IllegalArgumentException("未知的目标群系：" + entry.getValue());
+            mapping.put(src, dst);
+        }
+        return mapping;
+    }
+
+    /** 带 minecraft: 前缀的走内置表，否则当自定义群系。 */
+    private static ChunkerBiome resolveBiome(String identifier) {
+        if (identifier == null) return null;
+        String trimmed = identifier.trim();
+        if (trimmed.startsWith("minecraft:")) {
+            return ChunkerBiome.ChunkerVanillaBiome.find(trimmed).orElse(null);
+        }
+        return trimmed.isEmpty() ? null : new ChunkerCustomBiome(trimmed);
+    }
+
     private final AtomicReference<String> status = new AtomicReference<>("idle");
     private final AtomicReference<String> message = new AtomicReference<>("");
     private final AtomicReference<SurveyResult> survey = new AtomicReference<>();
@@ -117,6 +154,9 @@ public class ConversionJob {
             converter.setSkipNewEmptyColumns(prepared != null);
             converter.setShiftToFit(shiftToFit);
             converter.setClearContainers(clearContainers);
+            if (biomeMappings != null && !biomeMappings.isEmpty()) {
+                converter.setBiomeMapping(parseBiomeMapping(biomeMappings));
+            }
             if (lossless) converter.setLosslessBlocks(new com.hivemc.chunker.downgrade.LosslessBlocks(losslessHandler));
 
             // The built-in approximations are always applied, with the user's own mappings taking precedence. Without

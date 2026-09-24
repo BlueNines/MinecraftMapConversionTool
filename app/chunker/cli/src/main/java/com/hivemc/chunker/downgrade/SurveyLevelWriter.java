@@ -10,6 +10,7 @@ import com.hivemc.chunker.conversion.intermediate.column.biome.ChunkerBiome;
 import com.hivemc.chunker.conversion.intermediate.column.blockentity.BlockEntity;
 import com.hivemc.chunker.conversion.intermediate.column.chunk.ChunkerChunk;
 import com.hivemc.chunker.conversion.intermediate.column.chunk.identifier.ChunkerBlockIdentifier;
+import com.hivemc.chunker.conversion.intermediate.column.chunk.palette.Palette;
 import com.hivemc.chunker.conversion.intermediate.column.entity.Entity;
 import com.hivemc.chunker.conversion.intermediate.level.ChunkerLevel;
 import com.hivemc.chunker.conversion.intermediate.world.ChunkerWorld;
@@ -118,11 +119,30 @@ public class SurveyLevelWriter implements LevelWriter {
                 }
             }
             if (overworld) observeGround(column);
+            if (countBlocks) observeBiomes(column);
             for (BlockEntity blockEntity : column.getBlockEntities()) {
                 survey.observeBlockEntityY(blockEntity.getY());
             }
             for (Entity entity : column.getEntities()) {
                 survey.observeEntityY(entity.getPositionY());
+            }
+        }
+
+        /**
+         * Record which biomes this column uses.
+         * <p>
+         * Every palette is walked rather than one sampled layer: a biome which only appears in a layer the target
+         * cannot store is exactly the one worth reporting, and sampling the surface would hide it.
+         *
+         * @param column the column to sample.
+         */
+        private void observeBiomes(ChunkerColumn column) {
+            if (column.getBiomes() == null) return;
+            for (Palette<ChunkerBiome> palette : column.getBiomes().asPalette()) {
+                int keys = palette.getKeyCount();
+                for (int i = 0; i < keys; i++) {
+                    survey.observeBiome(palette.getKey(i));
+                }
             }
         }
 

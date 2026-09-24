@@ -1,7 +1,9 @@
 package com.hivemc.chunker.downgrade;
 
+import com.hivemc.chunker.conversion.intermediate.column.biome.ChunkerBiome;
 import com.hivemc.chunker.conversion.intermediate.column.chunk.identifier.ChunkerBlockIdentifier;
 import com.hivemc.chunker.conversion.intermediate.column.chunk.palette.Palette;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -45,6 +47,7 @@ public final class BlockSurvey {
     private final AtomicInteger maxChunkZ = new AtomicInteger(Integer.MIN_VALUE);
     private final ConcurrentHashMap<Long, ConcurrentHashMap<Integer, int[]>> cellSurfaces = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<ChunkerBlockIdentifier, LongAdder> blockCounts = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<ChunkerBiome, LongAdder> biomeCounts = new ConcurrentHashMap<>();
 
     /**
      * Record a section which may contain blocks.
@@ -314,6 +317,34 @@ public final class BlockSurvey {
     public Map<ChunkerBlockIdentifier, Long> getBlockCounts() {
         Map<ChunkerBlockIdentifier, Long> sorted = new LinkedHashMap<>();
         blockCounts.entrySet().stream()
+                .sorted((left, right) -> Long.compare(right.getValue().sum(), left.getValue().sum()))
+                .forEach(entry -> sorted.put(entry.getKey(), entry.getValue().sum()));
+        return sorted;
+    }
+
+    /**
+     * Count one occurrence of a biome somewhere in the world.
+     * <p>
+     * The point of counting these is the mapping editor: a biome the target version does not have is replaced with
+     * a default one, and the only sign of it in the output is a different colour of grass. Listing the biomes the
+     * map actually uses, with the unsupported ones marked, is what makes that a choice the user can make rather
+     * than something to discover in game.
+     *
+     * @param biome the biome, or null if there is nothing to count.
+     */
+    public void observeBiome(@Nullable ChunkerBiome biome) {
+        if (biome == null) return;
+        biomeCounts.computeIfAbsent(biome, ignored -> new LongAdder()).increment();
+    }
+
+    /**
+     * Get how much of the world uses each biome.
+     *
+     * @return a map of biome to occurrence count, ordered by descending count.
+     */
+    public Map<ChunkerBiome, Long> getBiomeCounts() {
+        Map<ChunkerBiome, Long> sorted = new LinkedHashMap<>();
+        biomeCounts.entrySet().stream()
                 .sorted((left, right) -> Long.compare(right.getValue().sum(), left.getValue().sum()))
                 .forEach(entry -> sorted.put(entry.getKey(), entry.getValue().sum()));
         return sorted;

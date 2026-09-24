@@ -5,7 +5,9 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.hivemc.chunker.conversion.encoding.base.Version;
+import com.hivemc.chunker.conversion.encoding.java.base.resolver.biome.JavaBiomeIDResolver;
 import com.hivemc.chunker.conversion.encoding.java.base.resolver.identifier.legacy.JavaLegacyBlockIDResolver;
+import com.hivemc.chunker.conversion.intermediate.column.biome.ChunkerBiome;
 import com.hivemc.chunker.downgrade.Approximations;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -37,6 +39,27 @@ import java.util.concurrent.atomic.AtomicReference;
  * dependency tree to resolve, which matters for something meant to be opened and used rather than deployed.
  */
 public class LocalApp {
+    /**
+     * 从请求里取群系映射（{@code {"biomeMappings": {"源群系": "目标群系"}}}）。
+     *
+     * <p>命令行版一直支持这个能力，网页路径之前没接；目标版本没有的群系就只能降级了。</p>
+     *
+     * @return 解析后的映射，没有时返回 null。
+     */
+    private static java.util.Map<String, String> parseBiomeMappings(final JsonObject request) {
+        if (!request.has("biomeMappings") || request.get("biomeMappings").isJsonNull()) return null;
+        final com.google.gson.JsonElement element = request.get("biomeMappings");
+        if (!element.isJsonObject()) return null;
+        final java.util.Map<String, String> out = new java.util.LinkedHashMap<>();
+        for (final java.util.Map.Entry<String, com.google.gson.JsonElement> entry
+                : element.getAsJsonObject().entrySet()) {
+            if (entry.getValue() == null || entry.getValue().isJsonNull()) continue;
+            final String value = entry.getValue().getAsString();
+            if (value != null && !value.trim().isEmpty()) out.put(entry.getKey(), value.trim());
+        }
+        return out.isEmpty() ? null : out;
+    }
+
     /** 未传模式的旧客户端保持降级行为。 */
     private static boolean isLossless(JsonObject request) {
         return request.has("mode") && "lossless".equals(request.get("mode").getAsString());
@@ -100,6 +123,7 @@ public class LocalApp {
         server.createContext("/api/status", this::handleStatus);
         server.createContext("/api/report", this::handleReport);
         server.createContext("/api/target-blocks", this::handleTargetBlocks);
+        server.createContext("/api/biomes", this::handleBiomes);
         server.createContext("/api/scan", this::handleScan);
         server.createContext("/api/approximations", this::handleApproximations);
         server.createContext("/api/block-icon", this::handleBlockIcon);
@@ -510,6 +534,7 @@ public class LocalApp {
 
         boolean lossless = isLossless(request);
         ConversionJob newJob = new ConversionJob(input, output, output, shiftToFit, clearContainers, mappings, approximate, lossless);
+        newJob.setBiomeMappings(parseBiomeMappings(request));
         newJob.prepareWith(preparedWorlds);
         // 无损模式只保留源地图预览：结果世界里的幽灵方块在 1.12.2 BlueMap 里没有对应外观，
         // 渲染出来只会误导，所以不启动结果侧，也省掉一次完整渲染与一个常驻进程。
@@ -618,6 +643,33 @@ public class LocalApp {
                 resolver.to(id).ifPresent(blocks::add);
             }
             result.add("blocks", blocks);
+        } catch (Exception e) {
+            result.addProperty("error", describe(e));
+        }
+        safeRespondJson(exchange, GSON.toJson(result));
+    }
+
+    /**
+     * 列出 1.12.2 能存下的群系（含数字 ID），作为群系映射的目标候选。
+     *
+     * <p>与方块候选同理：映射到一个目标版本没有的群系会被静默丢弃，用户只能从名字上看出来是名字不熟，
+     * 无法知道写不写得进去。所以只能给出真正支持的那一份。</p>
+     */
+    private void handleBiomes(HttpExchange exchange) throws IOException {
+        JsonObject result = new JsonObject();
+        JsonArray biomes = new JsonArray();
+        try {
+            JavaBiomeIDResolver resolver = new JavaBiomeIDResolver(new Version(1, 12, 2));
+            for (ChunkerBiome.ChunkerVanillaBiome biome : resolver.getSupportedBiomes()) {
+                // 只列出有 Java 标识符的，让前端可以直接当作 biomeMappings 的键值。
+                biome.getJavaIdentifier().ifPresent(identifier -> {
+                    JsonObject item = new JsonObject();
+                    item.addProperty("identifier", identifier);
+                    item.addProperty("id", resolver.from(biome).orElse(-1));
+                    biomes.add(item);
+                });
+            }
+            result.add("biomes", biomes);
         } catch (Exception e) {
             result.addProperty("error", describe(e));
         }
@@ -808,6 +860,7 @@ public class LocalApp {
             Files.createDirectories(scratch);
 
             ConversionJob analysis = new ConversionJob(input, scratch, scratch, true, true, mappings, approximate, isLossless(request));
+            analysis.setBiomeMappings(parseBiomeMappings(request));
             analysis.prepareWith(preparedWorlds);
             analysis.run();
             if (analysis.isFailed()) {
