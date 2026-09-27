@@ -3,7 +3,9 @@ package com.hivemc.chunker.conversion.encoding.java.base.resolver.biome;
 import com.hivemc.chunker.conversion.encoding.base.Version;
 import com.hivemc.chunker.conversion.intermediate.column.biome.ChunkerBiome;
 import com.hivemc.chunker.conversion.encoding.base.resolver.biome.ChunkerBiomeResolver;
+import com.hivemc.chunker.downgrade.CustomBiomeSlots;
 
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -17,6 +19,18 @@ public class JavaBiomeIDResolver extends ChunkerBiomeResolver<Integer> {
      * @param javaVersion the game version being used, as certain biomes are only available after specific versions.
      */
     public JavaBiomeIDResolver(Version javaVersion) {
+        this(javaVersion, false);
+    }
+
+    /**
+     * Create a new java ID biome resolver.
+     *
+     * @param javaVersion   the game version being used, as certain biomes are only available after specific versions.
+     * @param customBiomes  whether to register the custom biome slots, letting 1.13+ biomes be written to a spare
+     *                      number instead of falling back to the default biome. Requires the GhostBlocks plugin on
+     *                      the server to translate the numbers back.
+     */
+    public JavaBiomeIDResolver(Version javaVersion, boolean customBiomes) {
         mapping.put(ChunkerBiome.ChunkerVanillaBiome.OCEAN, 0);
         mapping.put(ChunkerBiome.ChunkerVanillaBiome.PLAINS, 1);
         mapping.put(ChunkerBiome.ChunkerVanillaBiome.DESERT, 2);
@@ -125,6 +139,15 @@ public class JavaBiomeIDResolver extends ChunkerBiomeResolver<Integer> {
             mapping.put(ChunkerBiome.ChunkerVanillaBiome.FROZEN_PEAKS, 180);
             mapping.put(ChunkerBiome.ChunkerVanillaBiome.JAGGED_PEAKS, 181);
             mapping.put(ChunkerBiome.ChunkerVanillaBiome.STONY_PEAKS, 182);
+        }
+
+        // 自定义槽位放在最后登记，确保不被上面任何一条覆盖（InvertibleMap.put 是直接覆盖）。
+        // 只能挂在 1.13 以下：1.13-1.17 已经把 40-50（末地/海洋细分类）当成真群系，
+        // 1.18 及以上用字符串标识符、根本不走这张表；覆盖上去只会把这些群系解读错。
+        if (customBiomes && javaVersion.isLessThan(1, 13, 0)) {
+            for (Map.Entry<ChunkerBiome.ChunkerVanillaBiome, Integer> slot : CustomBiomeSlots.load().entrySet()) {
+                mapping.put(slot.getKey(), slot.getValue());
+            }
         }
     }
 

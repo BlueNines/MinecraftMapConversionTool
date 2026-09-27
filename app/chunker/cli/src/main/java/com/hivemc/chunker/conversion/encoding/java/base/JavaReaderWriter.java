@@ -1,6 +1,7 @@
 package com.hivemc.chunker.conversion.encoding.java.base;
 
 import com.hivemc.chunker.conversion.encoding.EncodingType;
+import com.hivemc.chunker.conversion.WorldConverter;
 import com.hivemc.chunker.conversion.encoding.base.Converter;
 import com.hivemc.chunker.conversion.encoding.base.LevelReaderWriter;
 import com.hivemc.chunker.conversion.encoding.base.Version;
@@ -54,7 +55,7 @@ public interface JavaReaderWriter extends LevelReaderWriter {
                 .blockIdentifierResolver(new JavaLegacyBlockIdentifierResolver(converter, version, isReader(), converter.shouldAllowCustomIdentifiers()))
                 .entityTypeResolver(new JavaLegacyEntityTypeResolver(version))
                 .biomeNameResolver(new JavaNamedBiomeResolver(version, converter.shouldAllowCustomIdentifiers()))
-                .biomeIDResolver(new JavaBiomeIDResolver(version))
+                .biomeIDResolver(new JavaBiomeIDResolver(version, usesCustomBiomeSlots(converter)))
                 .effectResolver(new JavaEffectResolver(version))
                 .effectIDResolver(new JavaEffectIDResolver(version))
                 .enchantmentResolver(new JavaEnchantmentResolver(version))
@@ -74,5 +75,22 @@ public interface JavaReaderWriter extends LevelReaderWriter {
                 .entityResolverConstructor((resolvers) -> new JavaLegacyEntityResolver(version, resolvers))
                 .levelDirectoryResolver(new JavaLevelDirectoryResolver(getLevelDirectory()))
                 .preTransformManager(isReader() ? new JavaLegacyReaderPreTransformManager(version) : new JavaLegacyWriterPreTransformManager(version));
+    }
+
+    /**
+     * 是否启用自定义群系槽位（1.13+ 群系写到 1.12.2 用不到的编号上）。
+     *
+     * <p>只在无损（幽灵）模式启用：那些编号要靠服务端的 GhostBlocks 插件才能翻译回真实群系，
+     * 与幽灵方块属于同一个前提。降级模式的产物要保持原版 1.12.2 就能正确打开。</p>
+     *
+     * <p>读侧同样启用：本方法被读写两侧共用，只有两边都登记才能让产物循环转换往返无损。
+     * 对原生 1.12.2 存档无影响——那些编号原版本就不会产生（40-50 是 1.13+ 才有的，79-96 更晚）。</p>
+     *
+     * @param converter the converter instance.
+     * @return true if the custom biome slots should be used.
+     */
+    static boolean usesCustomBiomeSlots(Converter converter) {
+        return converter instanceof WorldConverter
+                && ((WorldConverter) converter).getLosslessBlocks() != null;
     }
 }

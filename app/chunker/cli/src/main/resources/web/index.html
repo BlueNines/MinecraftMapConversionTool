@@ -103,7 +103,7 @@ html[data-theme=light]{color-scheme:light;--bg:#f2f5f5;--panel:#fff;--surface:#f
 <p class="tiny muted" id="mappingFootnote">自定义规则优先于内置规则。留空使用默认行为，填 minecraft:air 表示主动移除。</p>
 </div>
 <div id="biomeSection" hidden>
-<div class="section-header"><div><h2>群系映射</h2><p>1.12.2 没有的群系会被换成默认群系；在这里指定换成哪一个。</p></div></div>
+<div class="section-header"><div><h2>群系映射</h2><p>1.12.2 没有的群系会被换成默认群系；无损模式下则原样保留。在这里指定换成哪一个。</p></div></div>
 <div class="mapping-panel"><div class="table-wrap"><table class="mapping-table"><thead><tr><th scope="col">源群系</th><th scope="col">当前结果</th><th scope="col">映射为</th></tr></thead><tbody id="biomeRows"></tbody></table></div></div>
 <p class="tiny muted" id="biomeFootnote">列出本地图用到、但 1.12.2 装不下的群系。留空则用默认群系。</p>
 <datalist id="biomeTargets"></datalist>
@@ -276,7 +276,7 @@ function renderHeader() {
 }
 function renderNotices() {
   const notices=[];
-  if(state.mode==='lossless')notices.push('无损模式：1.12.2 没有的方块写成幽灵 id 保留，需服务端安装 GhostBlocks 插件才能正确显示；楼梯朝向、活板门开合等状态一并保留。');
+  if(state.mode==='lossless')notices.push('无损模式：1.12.2 没有的方块写成幽灵 id、没有的群系写成自定义槽位，需服务端安装 GhostBlocks 插件才能正确显示；楼梯朝向、活板门开合等状态一并保留。');
   if(state.report?.lossless)notices.push('最近报告有 '+count(state.report.lossless.pendingBlocks)+' 个方块未被接管、回落原生编码；导出报告可查看完整清单。');
   if(state.report && state.scanKey && state.scanKey!==scanSignature()) notices.push('映射或转换策略已修改。下方仍是最近一次报告，可重新分析，或应用修改并转换。');
   if(!state.shift) notices.push('现有后端的预分析固定按自动上移计算；你已关闭上移，请以正式转换报告为准。');
@@ -504,12 +504,16 @@ function renderBiomes() {
   $('biomeSection').hidden=false;
   $('biomeRows').innerHTML=rows.map(row=>{
     const value=state.biomeDrafts.get(row.name)||'',bad=value.trim()&&!valid(canonical(value));
-    const result=row.supported===false?'<span class="tag warn">1.12.2 没有·降级</span>':row.supported===true?'<span class="tag good">支持</span>':'<span class="muted">待分析</span>';
+    // 无损模式下这类群系会写成自定义槽位保留，不是真的“降级”，不能沿用降级标签。
+    const result=row.supported===false?(state.mode==='lossless'?'<span class="tag good">无损·自定义槽位</span>':'<span class="tag warn">1.12.2 没有·降级</span>'):row.supported===true?'<span class="tag good">支持</span>':'<span class="muted">待分析</span>';
     return '<tr><td><div class="block-name"><b title="'+esc(row.name)+'">'+esc(short(row.name))+'</b></div></td><td>'+result+'</td><td><div class="target-editor"><input class="map-input biome-input" list="biomeTargets" data-biome-from="'+esc(row.name)+'" aria-label="'+esc(row.name)+' 映射为" aria-invalid="'+Boolean(bad)+'" value="'+esc(value)+'" autocomplete="off" placeholder="默认群系" spellcheck="false"'+(state.busy?' disabled':'')+'><button class="row-reset" data-biome-reset="'+esc(row.name)+'" aria-label="重置 '+esc(row.name)+'" title="清除映射"'+(state.busy?' disabled':'')+'>'+icon('close')+'</button></div><small class="input-detail '+(bad?'error':value?'custom':'')+'">'+(bad?'格式无效，请使用 namespace:biome':value?'映射 · 重新转换后生效':'不指定则用默认群系')+'</small></td></tr>';
   }).join('')||'<tr><td colspan="3" class="empty-table">先分析地图，这里会列出它用到的群系。</td></tr>';
   const unsupported=rows.filter(r=>r.supported===false).length;
-  $('biomeFootnote').textContent=unsupported?'共 '+rows.length+' 个群系，其中 '+unsupported+' 个 1.12.2 装不下，不指定映射就会回落到默认群系。':'共 '+rows.length+' 个群系，都能直接写入 1.12.2。';
-  $('biomeTargets').innerHTML=state.biomeTargets.map(b=>'<option value="'+esc(b.identifier)+'"></option>').join('');
+  if(!unsupported)$('biomeFootnote').textContent='共 '+rows.length+' 个群系，都能直接写入 1.12.2。';
+  else if(state.mode==='lossless')$('biomeFootnote').textContent='共 '+rows.length+' 个群系，其中 '+unsupported+' 个 1.12.2 装不下，但无损模式下会写成自定义槽位原样保留（服务端需装 GhostBlocks 插件）。留空则用默认群系。';
+  else $('biomeFootnote').textContent='共 '+rows.length+' 个群系，其中 '+unsupported+' 个 1.12.2 装不下，不指定映射就会回落成默认群系；无损模式能把它们原样保留。';
+  // 目标候选随模式而变：自定义槽位群系只在无损模式下能真正写进去，降级模式下选它们只会掉回默认群系。
+  $('biomeTargets').innerHTML=state.biomeTargets.filter(b=>state.mode==='lossless'||!b.lossless).map(b=>'<option value="'+esc(b.identifier)+'"></option>').join('');
 }
 $('biomeRows').addEventListener('input',e=>{
   if(state.busy||!e.target.matches('.biome-input'))return;
@@ -579,7 +583,7 @@ function requestConversion() {
   if(overlappingPaths(state.source,state.output)){notify('输出目录不能与源地图相同或互相嵌套。','bad');return;}
   pendingConversion={...config(),key:signature(),scanKey:scanSignature()};
   const r=state.report,lines=['源地图：'+state.source,'输出：'+(state.output||'工具目录下自动创建的 converted 子目录'),'自定义规则：'+[...state.drafts].filter(([,v])=>v.trim()).length+' 条'];
-  if(state.mode==='lossless')lines.push('无损模式：1.12.2 没有的方块写成幽灵 id 保留，服务端需装 GhostBlocks 插件；楼梯朝向、活板门开合等状态一并保留。');
+  if(state.mode==='lossless')lines.push('无损模式：1.12.2 没有的方块写成幽灵 id、没有的群系写成自定义槽位，服务端需装 GhostBlocks 插件；楼梯朝向、活板门开合等状态一并保留。');
   if(r)lines.push('最近报告：'+count(r.unmapped?.blocksLost)+' 个方块变成空气，'+count(r.substitutions?.totalBlocksChanged)+' 个方块被替换。');
   if(state.scanKey!==scanSignature())lines.push('注意：配置已变化，最近报告不是这次转换的精确预测。');
   lines.push('容器物品将清空。'+(!state.shift?'自动上移已关闭，预分析高度结果不适用。':''));
@@ -805,7 +809,7 @@ function applyPreviewMode(){
 function renderMode(){
   const lossless=state.mode==='lossless';
   $('approximateRow').hidden=lossless;
-  $('modeHint').textContent=lossless?'输出仍为 1.12.2。不自动替换：1.12.2 没有的方块写成幽灵 id 原样保留，需服务端安装 GhostBlocks 插件；楼梯朝向、活板门开合等状态一并保留。':'按现有规则转换为 1.12.2。';
+  $('modeHint').textContent=lossless?'输出仍为 1.12.2。不自动替换：1.12.2 没有的方块写成幽灵 id 原样保留，群系也写入自定义槽位保留，两者都需服务端安装 GhostBlocks 插件；楼梯朝向、活板门开合等状态一并保留。':'按现有规则转换为 1.12.2；1.12.2 装不下的群系会换成默认群系。';
   applyPreviewMode();
 }
 $('conversionMode').onchange=()=>{state.mode=$('conversionMode').value;state.resultLossless=false;renderMode();save();renderAll();};

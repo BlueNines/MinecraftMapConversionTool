@@ -9,6 +9,7 @@ import com.hivemc.chunker.conversion.encoding.java.base.resolver.biome.JavaBiome
 import com.hivemc.chunker.conversion.encoding.java.base.resolver.identifier.legacy.JavaLegacyBlockIDResolver;
 import com.hivemc.chunker.conversion.intermediate.column.biome.ChunkerBiome;
 import com.hivemc.chunker.downgrade.Approximations;
+import com.hivemc.chunker.downgrade.CustomBiomeSlots;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
@@ -654,18 +655,24 @@ public class LocalApp {
      *
      * <p>与方块候选同理：映射到一个目标版本没有的群系会被静默丢弃，用户只能从名字上看出来是名字不熟，
      * 无法知道写不写得进去。所以只能给出真正支持的那一份。</p>
+     *
+     * <p>无损模式下还会多出一批「自定义槽位」群系（1.13+ 新增，如 deep_dark），
+     * 它们靠服务端的 GhostBlocks 插件才能翻译回真实群系，所以标上 {@code lossless} 供前端按模式过滤。</p>
      */
     private void handleBiomes(HttpExchange exchange) throws IOException {
         JsonObject result = new JsonObject();
         JsonArray biomes = new JsonArray();
         try {
-            JavaBiomeIDResolver resolver = new JavaBiomeIDResolver(new Version(1, 12, 2));
+            // 固定带自定义槽位：候选是「无损模式下可选的目标」超集，降级模式由前端按 lossless 标记过滤。
+            JavaBiomeIDResolver resolver = new JavaBiomeIDResolver(new Version(1, 12, 2), true);
+            Set<ChunkerBiome.ChunkerVanillaBiome> slots = CustomBiomeSlots.load().keySet();
             for (ChunkerBiome.ChunkerVanillaBiome biome : resolver.getSupportedBiomes()) {
                 // 只列出有 Java 标识符的，让前端可以直接当作 biomeMappings 的键值。
                 biome.getJavaIdentifier().ifPresent(identifier -> {
                     JsonObject item = new JsonObject();
                     item.addProperty("identifier", identifier);
                     item.addProperty("id", resolver.from(biome).orElse(-1));
+                    item.addProperty("lossless", slots.contains(biome));
                     biomes.add(item);
                 });
             }
